@@ -12,6 +12,9 @@ use solana_sdk::pubkey;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use spl_associated_token_account::get_associated_token_address;
+use ta::Close;
+use ta::High;
+use ta::Low;
 use std::sync::LazyLock;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
@@ -424,6 +427,24 @@ pub struct PoolPriceInfo {
     pub quote_reserve: u64,        // quote币种池子余额
     pub base_price_in_quote: f64,  // 1个base币等于多少quote币
     pub last_updated: PoolTimeStr, // UTC、无年份、精确到0.xx秒
+}
+
+impl Low for PoolPriceInfo {
+    fn low(&self) -> f64 {
+        self.base_price_in_quote
+    }
+}
+
+impl High for PoolPriceInfo {
+    fn high(&self) -> f64 {
+        self.base_price_in_quote
+    }
+}
+
+impl Close for PoolPriceInfo {
+    fn close(&self) -> f64 {
+        self.base_price_in_quote
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
