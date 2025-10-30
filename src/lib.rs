@@ -8,6 +8,7 @@ use serde::Serialize;
 // use sol_trade_sdk::trading::bonk::pool::Pool as BonkPool;
 use solana_sdk::bs58;
 use solana_sdk::hash::Hash;
+use solana_sdk::message::compiled_instruction::CompiledInstruction;
 use solana_sdk::pubkey;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
@@ -15,9 +16,10 @@ use spl_associated_token_account::get_associated_token_address;
 use ta::Close;
 use ta::High;
 use ta::Low;
+use tokio::sync::RwLock;
 use std::sync::LazyLock;
-use std::sync::RwLock;
 use std::time::{Duration, Instant};
+use grpc_client::TransactionFormat;
 
 pub mod macros;
 
@@ -135,7 +137,7 @@ pub async fn get_cached_blockhash(
     json_rpc_client: &solana_client::nonblocking::rpc_client::RpcClient,
 ) -> Option<Hash> {
     {
-        let cache = BLOCKHASH_CACHE.read().unwrap();
+        let cache = BLOCKHASH_CACHE.read().await;
         if let Some((hash, ts)) = &*cache {
             if ts.elapsed() < Duration::from_secs(30) {
                 return Some(*hash);
@@ -147,7 +149,7 @@ pub async fn get_cached_blockhash(
     for _ in 0..5 {
         match json_rpc_client.get_latest_blockhash().await {
             Ok(hash) => {
-                let mut cache = BLOCKHASH_CACHE.write().unwrap();
+                let mut cache = BLOCKHASH_CACHE.write().await;
                 *cache = Some((hash, Instant::now()));
                 return Some(hash);
             }
@@ -172,7 +174,7 @@ pub async fn get_ata_balance(
             // 如果是账户不存在，返回 None，否则可根据需要打印日志
             if let solana_client::client_error::ClientErrorKind::RpcError(
                 solana_client::rpc_request::RpcError::ForUser(msg),
-            ) = &e.kind
+            ) = &*e.kind
             {
                 if msg.contains("could not find account") || msg.contains("AccountNotFound") {
                     return None;
@@ -198,7 +200,7 @@ pub async fn get_ata_balance_with_decimal(
             // 如果是账户不存在，返回 None，否则可根据需要打印日志
             if let solana_client::client_error::ClientErrorKind::RpcError(
                 solana_client::rpc_request::RpcError::ForUser(msg),
-            ) = &e.kind
+            ) = &*e.kind
             {
                 if msg.contains("could not find account") || msg.contains("AccountNotFound") {
                     return None;
@@ -335,9 +337,7 @@ pub fn decode_sk_file(path: &str) {
     println!("Decoded and wrote to {}: {} bytes", path, decoded.len());
 }
 
-use solana_sdk::instruction::CompiledInstruction;
 
-use grpc_client::TransactionFormat;
 
 #[derive(Debug, Clone)]
 pub struct ParsedInstruction {
