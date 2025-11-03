@@ -6,6 +6,7 @@ use log::warn;
 use serde::Deserialize;
 use serde::Serialize;
 // use sol_trade_sdk::trading::bonk::pool::Pool as BonkPool;
+use grpc_client::TransactionFormat;
 use solana_sdk::bs58;
 use solana_sdk::hash::Hash;
 use solana_sdk::message::compiled_instruction::CompiledInstruction;
@@ -13,13 +14,12 @@ use solana_sdk::pubkey;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use spl_associated_token_account::get_associated_token_address;
+use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 use ta::Close;
 use ta::High;
 use ta::Low;
 use tokio::sync::RwLock;
-use std::sync::LazyLock;
-use std::time::{Duration, Instant};
-use grpc_client::TransactionFormat;
 
 pub mod macros;
 
@@ -125,6 +125,119 @@ impl Usd1ToUsd1Unit for i64 {
 impl Usd1ToUsd1Unit for i32 {
     fn to_usd1_unit(self) -> u64 {
         (self as u64).saturating_mul(1_000_000)
+    }
+}
+
+use std::fmt;
+
+/// 为小数类型（f64/f32）提供“0.{n}xxxx”格式化能力的Trait
+pub trait SmallDecimalFormat
+where
+    Self: fmt::Display,
+{
+    /// 格式化小正数为 0.{n}xxxx 形式
+    /// - significant_digits：保留的有效数字位数（建议 ≥1）
+    /// - 返回：成功则为格式化字符串，失败（如数值不在 (0,1) 范围）则为 None
+    fn format_small_decimal(&self, significant_digits: usize) -> Option<String>;
+
+    /// （可选）带兜底的格式化：失败时返回原始数字的字符串（避免处理 None）
+    fn format_small_decimal_or_default(&self, significant_digits: usize) -> String {
+        self.format_small_decimal(significant_digits)
+            .unwrap_or_else(|| self.to_string())
+    }
+}
+
+// ------------------------------ f64 实现 ------------------------------
+impl SmallDecimalFormat for f64 {
+    fn format_small_decimal(&self, significant_digits: usize) -> Option<String> {
+        // 额外校验：有效数字位数不能为 0（避免空字符串）
+        if significant_digits == 0 {
+            return None;
+        }
+
+        let num = *self;
+        if num == 0.0 || num.abs() >= 1.0 {
+            return None;
+        }
+
+        let sign = if num < 0.0 { "-" } else { "" };
+        let abs_num = num.abs();
+
+        // 优化：科学计数法保留位数适配有效数字需求（避免多余计算）
+        // f64 有效精度上限约15位，取 "需要的有效数字+1" 和 15 的最小值
+        let sci_precision = std::cmp::min(significant_digits + 1, 15);
+        // 关键修正：用 sci_precision 控制科学计数法的保留精度（之前没用到这里）
+        let sci_str = fmt::format(format_args!("{:.1$e}", abs_num, sci_precision));
+
+        let parts: Vec<&str> = sci_str.split('e').collect();
+        if parts.len() != 2 {
+            return None;
+        }
+        let (sig_part, exp_part) = (parts[0], parts[1]);
+
+        let exponent: i32 = match exp_part.parse() {
+            Ok(exp) if exp < 0 => exp,
+            _ => return None,
+        };
+
+        let n = (-exponent) - 1;
+        if n < 0 {
+            return None;
+        }
+
+        let sig_digits = sig_part
+            .chars()
+            .filter(|&c| c != '.')
+            .take(significant_digits)
+            .collect::<String>();
+
+        Some(format!("{sign}0.{{{n}}}{sig_digits}"))
+    }
+}
+
+// ------------------------------ f32 实现 ------------------------------
+impl SmallDecimalFormat for f32 {
+    fn format_small_decimal(&self, significant_digits: usize) -> Option<String> {
+        if significant_digits == 0 {
+            return None;
+        }
+
+        let num = *self;
+        if num == 0.0 || num.abs() >= 1.0 {
+            return None;
+        }
+
+        let sign = if num < 0.0 { "-" } else { "" };
+        let abs_num = num.abs();
+
+        // f32 有效精度上限约9位，同样适配有效数字需求
+        let sci_precision = std::cmp::min(significant_digits + 1, 9);
+        // 关键修正：用 sci_precision 控制保留精度
+        let sci_str = fmt::format(format_args!("{:.1$e}", abs_num, sci_precision));
+
+        let parts: Vec<&str> = sci_str.split('e').collect();
+        if parts.len() != 2 {
+            return None;
+        }
+        let (sig_part, exp_part) = (parts[0], parts[1]);
+
+        let exponent: i32 = match exp_part.parse() {
+            Ok(exp) if exp < 0 => exp,
+            _ => return None,
+        };
+
+        let n = (-exponent) - 1;
+        if n < 0 {
+            return None;
+        }
+
+        let sig_digits = sig_part
+            .chars()
+            .filter(|&c| c != '.')
+            .take(significant_digits)
+            .collect::<String>();
+
+        Some(format!("{sign}0.{{{n}}}{sig_digits}"))
     }
 }
 
@@ -336,8 +449,6 @@ pub fn decode_sk_file(path: &str) {
     file.write_all(json.as_bytes()).expect("write file");
     println!("Decoded and wrote to {}: {} bytes", path, decoded.len());
 }
-
-
 
 #[derive(Debug, Clone)]
 pub struct ParsedInstruction {
