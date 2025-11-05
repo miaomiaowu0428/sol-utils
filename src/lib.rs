@@ -790,8 +790,6 @@ pub fn flatten_main_instructions(tx: VersionedTransaction) -> Vec<IndexedInstruc
     ixs
 }
 
-
-
 #[derive(Debug, Clone, Copy)]
 pub struct TokenBalanceChange {
     pub mint: Pubkey,
