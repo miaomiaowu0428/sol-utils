@@ -823,7 +823,7 @@ impl PartialEq for TokenBalanceChange {
 impl Eq for TokenBalanceChange {}
 
 impl TokenBalanceChange {
-    fn from_tx(tx: &TransactionFormat) -> Result<Vec<Self>, ()> {
+    pub fn from_tx(tx: &TransactionFormat) -> Result<Vec<Self>, ()> {
         let Some(ref meta) = tx.meta else {
             return Err(());
         };
