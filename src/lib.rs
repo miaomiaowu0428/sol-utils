@@ -13,7 +13,9 @@ use solana_sdk::message::compiled_instruction::CompiledInstruction;
 use solana_sdk::pubkey;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
+use solana_sdk::transaction::VersionedTransaction;
 use spl_associated_token_account::get_associated_token_address;
+use std::str::FromStr;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use ta::Close;
@@ -774,5 +776,115 @@ impl MintDecimal for Pubkey {
         } else {
             9
         }
+    }
+}
+
+pub fn flatten_main_instructions(tx: VersionedTransaction) -> Vec<IndexedInstruction> {
+    let ixs = vec![];
+    let sig = tx.signatures;
+    match tx.message {
+        solana_sdk::message::VersionedMessage::Legacy(message) => todo!(),
+        solana_sdk::message::VersionedMessage::V0(message) => todo!(),
+    }
+
+    ixs
+}
+
+
+
+#[derive(Debug, Clone, Copy)]
+pub struct TokenBalanceChange {
+    pub mint: Pubkey,
+    pub mint_decimals: u8,
+    pub change: i128,     // 变化量
+    pub pre_amount: u64,  // 交易前余额
+    pub post_amount: u64, // 交易后余额
+    pub token_account: Pubkey,
+    pub owner: Pubkey,
+}
+
+// 按 token_account 排序
+impl Ord for TokenBalanceChange {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.token_account.cmp(&other.token_account)
+    }
+}
+
+impl PartialOrd for TokenBalanceChange {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for TokenBalanceChange {
+    fn eq(&self, other: &Self) -> bool {
+        self.token_account == other.token_account
+    }
+}
+
+impl Eq for TokenBalanceChange {}
+
+impl TokenBalanceChange {
+    fn from_tx(tx: &TransactionFormat) -> Result<Vec<Self>, ()> {
+        let Some(ref meta) = tx.meta else {
+            return Err(());
+        };
+        let Some(ref pre_token_balances) = meta.pre_token_balances else {
+            return Err(());
+        };
+        let Some(ref post_token_balances) = meta.post_token_balances else {
+            return Err(());
+        };
+
+        // 使用 HashMap 来匹配 pre 和 post 余额
+        use std::collections::HashMap;
+
+        let mut pre_map: HashMap<Pubkey, (Pubkey, Pubkey, u8, u64)> = HashMap::new();
+        for tb in pre_token_balances {
+            let mint = Pubkey::from_str(&tb.mint).unwrap_or_default();
+            let owner = Pubkey::from_str(&tb.owner).unwrap_or_default();
+            let token_account = tx
+                .account_keys
+                .get(tb.account_index as usize)
+                .cloned()
+                .unwrap_or_default();
+            let amt = tb.ui_token_amount.amount.parse().unwrap_or(0u64);
+            pre_map.insert(
+                token_account,
+                (mint, owner, tb.ui_token_amount.decimals, amt),
+            );
+        }
+
+        let mut changes = Vec::new();
+        for tb in post_token_balances {
+            let mint = Pubkey::from_str(&tb.mint).unwrap_or_default();
+            let owner = Pubkey::from_str(&tb.owner).unwrap_or_default();
+            let token_account = tx
+                .account_keys
+                .get(tb.account_index as usize)
+                .cloned()
+                .unwrap_or_default();
+            let post_amt = tb.ui_token_amount.amount.parse().unwrap_or(0u64);
+
+            // 查找对应的 pre 余额
+            let pre_amt = pre_map
+                .get(&token_account)
+                .map(|(_, _, _, amt)| *amt)
+                .unwrap_or(0u64);
+
+            let delta = post_amt as i128 - pre_amt as i128;
+            if delta != 0 {
+                changes.push(TokenBalanceChange {
+                    mint,
+                    mint_decimals: tb.ui_token_amount.decimals,
+                    change: delta,
+                    pre_amount: pre_amt,
+                    post_amount: post_amt,
+                    token_account,
+                    owner,
+                });
+            }
+        }
+        Ok(changes)
     }
 }
