@@ -886,3 +886,19 @@ impl TokenBalanceChange {
         Ok(changes)
     }
 }
+
+pub trait TokenName {
+    fn name(&self) -> String;
+}
+
+impl TokenName for Pubkey {
+    fn name(&self) -> String {
+        if *self == pubkey!("So11111111111111111111111111111111111111112") {
+            "Wsol".to_string()
+        } else if *self == pubkey!("USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB") {
+            "USD1".to_string()
+        } else {
+            self.to_string()
+        }
+    }
+}
