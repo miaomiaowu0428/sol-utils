@@ -1,12 +1,14 @@
+use grpc_client::TransactionFormat;
 use log::error;
 use log::info;
 use log::warn;
 use serde::Deserialize;
 use serde::Serialize;
-use grpc_client::TransactionFormat;
 use solana_sdk::bs58;
 use solana_sdk::hash::Hash;
+use solana_sdk::message::Instruction;
 use solana_sdk::message::compiled_instruction::CompiledInstruction;
+use solana_sdk::program_error::ProgramError;
 use solana_sdk::pubkey;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
@@ -949,5 +951,33 @@ impl ToUnit for i64 {
 impl ToUnit for i32 {
     fn to_unit(self, decimal: Self) -> u64 {
         (self * (10 as Self).pow(decimal.try_into().unwrap())) as u64
+    }
+}
+
+pub fn build_close_ata_ix(
+    token_program_id: &Pubkey,
+    account_pubkey: &Pubkey,
+    destination_pubkey: &Pubkey,
+    owner_pubkey: &Pubkey,
+    signer_pubkeys: &[&Pubkey],
+) -> Result<Instruction, ProgramError> {
+    if token_program_id == &spl_token::ID {
+        spl_token::instruction::close_account(
+            &token_program_id, // token_program_id
+            &account_pubkey,     // account_to_close (ATA)
+            &destination_pubkey,     // destination (接收剩余 SOL)
+            &owner_pubkey,     // owner
+            &signer_pubkeys,                 // multisigners
+        )
+    } else if token_program_id == &spl_token_2022::ID {
+        spl_token_2022::instruction::close_account(
+            &token_program_id, // token_program_id
+            &account_pubkey,     // account_to_close (ATA)
+            &destination_pubkey,     // destination (接收剩余 SOL)
+            &owner_pubkey,     // owner
+            &signer_pubkeys,                 // multisigners
+        )
+    }else{
+        Err(ProgramError::InvalidAccountData)
     }
 }
