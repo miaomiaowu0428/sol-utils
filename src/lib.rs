@@ -15,6 +15,7 @@ use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use solana_sdk::transaction::VersionedTransaction;
 use spl_associated_token_account::get_associated_token_address;
+use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::str::FromStr;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -330,9 +331,10 @@ pub async fn get_ata_balance_with_decimal(
 pub async fn get_token_balance(
     owner: &Pubkey,
     mint: &Pubkey,
+    token_program: &Pubkey,
     json_rpc_client: &solana_client::nonblocking::rpc_client::RpcClient,
 ) -> Option<(Pubkey, u64)> {
-    let ata = get_associated_token_address(owner, mint);
+    let ata = get_associated_token_address_with_program_id(owner, mint, token_program);
     let balance = get_ata_balance(&ata, json_rpc_client).await;
     balance.map(|b| (ata, b))
 }
@@ -900,5 +902,58 @@ impl TokenName for Pubkey {
         } else {
             self.to_string()
         }
+    }
+}
+
+/// USD1单位转换：1 USD1 = 1_000_000 单位
+pub trait ToUnit {
+    fn to_unit(self, decimal: Self) -> u64;
+}
+
+impl ToUnit for f64 {
+    fn to_unit(self, decimal: Self) -> u64 {
+        (self * (10 as Self).powf(decimal)) as u64
+    }
+}
+
+impl ToUnit for f32 {
+    fn to_unit(self, decimal: Self) -> u64 {
+        (self * (10 as Self).powf(decimal)) as u64
+    }
+}
+
+impl ToUnit for u64 {
+    fn to_unit(self, decimal: Self) -> u64 {
+        (self * (10 as Self).pow(decimal.try_into().unwrap())) as u64
+    }
+}
+
+impl ToUnit for u32 {
+    fn to_unit(self, decimal: Self) -> u64 {
+        (self * (10 as Self).pow(decimal.try_into().unwrap())) as u64
+    }
+}
+
+impl ToUnit for u16 {
+    fn to_unit(self, decimal: Self) -> u64 {
+        (self * (10 as Self).pow(decimal.try_into().unwrap())) as u64
+    }
+}
+
+impl ToUnit for u8 {
+    fn to_unit(self, decimal: Self) -> u64 {
+        (self * (10 as Self).pow(decimal.try_into().unwrap())) as u64
+    }
+}
+
+impl ToUnit for i64 {
+    fn to_unit(self, decimal: Self) -> u64 {
+        (self * (10 as Self).pow(decimal.try_into().unwrap())) as u64
+    }
+}
+
+impl ToUnit for i32 {
+    fn to_unit(self, decimal: Self) -> u64 {
+        (self * (10 as Self).pow(decimal.try_into().unwrap())) as u64
     }
 }
