@@ -777,15 +777,85 @@ impl MintDecimal for Pubkey {
     }
 }
 
-pub fn flatten_main_instructions(tx: VersionedTransaction) -> Vec<IndexedInstruction> {
-    let ixs = vec![];
-    let sig = tx.signatures;
+pub fn flatten_main_instructions(
+    tx: VersionedTransaction,
+    slot: u64,
+) -> Result<Vec<IndexedInstruction>, ()> {
     match tx.message {
-        solana_sdk::message::VersionedMessage::Legacy(message) => todo!(),
-        solana_sdk::message::VersionedMessage::V0(message) => todo!(),
+        solana_sdk::message::VersionedMessage::Legacy(message) => {
+            Ok(flatten_main_ix_from_legasy_msg(message, slot))
+        }
+        solana_sdk::message::VersionedMessage::V0(message) => {
+            Ok(flatten_main_ix_from_v0_msg(message, slot))
+        }
     }
+}
 
-    ixs
+pub fn flatten_main_ix_from_v0_msg(
+    solana_sdk::message::v0::Message {
+        account_keys: accounts,
+        instructions: ixs,
+        ..
+    }: solana_sdk::message::v0::Message,
+    slot: u64,
+) -> Vec<IndexedInstruction> {
+    ixs.iter() // 遍历指令引用，不消耗原 ixs
+        .enumerate()
+        .map(|(index, ix)| { // ix 是 &Instruction（共享引用）
+            let ix_accounts: Vec<Pubkey> = ix
+                .accounts
+                .iter() // 关键：用 iter() 遍历引用，不消耗 ix.accounts
+                .map(|&acc_idx| { // 解构 &u8 → u8（因为 ix.accounts 是 Vec<u8>）
+                    // 1. 索引转 usize；2. 取账户引用；3. 克隆成所有权类型（&Pubkey → Pubkey）
+                    accounts.get(acc_idx as usize)
+                        .unwrap_or(&Pubkey::default())
+                        .clone()
+                })
+                .collect(); // 现在元素是 Pubkey，可正常收集
+
+            IndexedInstruction {
+                index: index.to_string(),
+                instruction: ParsedInstruction {
+                    // 关键：accounts 是 Vec<Pubkey>，索引访问返回 &Pubkey，需 clone 转所有权
+                    program: accounts[ix.program_id_index as usize].clone(),
+                    accounts: ix_accounts,
+                    data: ix.data.clone(), // data 是 Vec<u8>，clone 得到所有权
+                    slot,
+                },
+                slot,
+            }
+        })
+        .collect()
+}
+
+pub fn flatten_main_ix_from_legasy_msg(
+    solana_sdk::message::Message {
+        account_keys: accounts,
+        instructions: ixs,
+        ..
+    }: solana_sdk::message::Message,
+    slot: u64,
+) -> Vec<IndexedInstruction> {
+    ixs.iter()
+        .enumerate()
+        .map(|(index, ix)| {
+            let ix_accounts = ix
+                .accounts
+                .iter()
+                .map(|index| accounts[*index as usize])
+                .collect();
+            IndexedInstruction {
+                index: index.to_string(),
+                instruction: ParsedInstruction {
+                    program: accounts[ix.program_id_index as usize],
+                    accounts: ix_accounts,
+                    data: ix.data.clone(),
+                    slot,
+                },
+                slot,
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -963,21 +1033,21 @@ pub fn build_close_ata_ix(
 ) -> Result<Instruction, ProgramError> {
     if token_program_id == &spl_token::ID {
         spl_token::instruction::close_account(
-            &token_program_id, // token_program_id
+            &token_program_id,   // token_program_id
             &account_pubkey,     // account_to_close (ATA)
-            &destination_pubkey,     // destination (接收剩余 SOL)
-            &owner_pubkey,     // owner
-            &signer_pubkeys,                 // multisigners
+            &destination_pubkey, // destination (接收剩余 SOL)
+            &owner_pubkey,       // owner
+            &signer_pubkeys,     // multisigners
         )
     } else if token_program_id == &spl_token_2022::ID {
         spl_token_2022::instruction::close_account(
-            &token_program_id, // token_program_id
+            &token_program_id,   // token_program_id
             &account_pubkey,     // account_to_close (ATA)
-            &destination_pubkey,     // destination (接收剩余 SOL)
-            &owner_pubkey,     // owner
-            &signer_pubkeys,                 // multisigners
+            &destination_pubkey, // destination (接收剩余 SOL)
+            &owner_pubkey,       // owner
+            &signer_pubkeys,     // multisigners
         )
-    }else{
+    } else {
         Err(ProgramError::InvalidAccountData)
     }
 }
