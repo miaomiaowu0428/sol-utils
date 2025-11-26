@@ -801,13 +801,16 @@ pub fn flatten_main_ix_from_v0_msg(
 ) -> Vec<IndexedInstruction> {
     ixs.iter() // 遍历指令引用，不消耗原 ixs
         .enumerate()
-        .map(|(index, ix)| { // ix 是 &Instruction（共享引用）
+        .map(|(index, ix)| {
+            // ix 是 &Instruction（共享引用）
             let ix_accounts: Vec<Pubkey> = ix
                 .accounts
                 .iter() // 关键：用 iter() 遍历引用，不消耗 ix.accounts
-                .map(|&acc_idx| { // 解构 &u8 → u8（因为 ix.accounts 是 Vec<u8>）
+                .map(|&acc_idx| {
+                    // 解构 &u8 → u8（因为 ix.accounts 是 Vec<u8>）
                     // 1. 索引转 usize；2. 取账户引用；3. 克隆成所有权类型（&Pubkey → Pubkey）
-                    accounts.get(acc_idx as usize)
+                    accounts
+                        .get(acc_idx as usize)
                         .unwrap_or(&Pubkey::default())
                         .clone()
                 })
@@ -1052,6 +1055,19 @@ pub fn build_close_ata_ix(
     }
 }
 
+impl Default for PoolPriceInfo {
+    fn default() -> Self {
+        Self {
+            pool_address: Pubkey::default(),
+            base_mint: Pubkey::default(),
+            quote_mint: Pubkey::default(),
+            base_reserve: 0,
+            quote_reserve: 0,
+            base_price_in_quote: 0.0,
+            last_updated: PoolTimeStr::now_utc(),
+        }
+    }
+}
 
 impl PoolPriceInfo {
     // =======================================================
@@ -1065,11 +1081,11 @@ impl PoolPriceInfo {
     /// @returns 能买到的 Base 数量 (u64)
     pub fn get_base_out_from_quote_in(&self, quote_in: u64, fee: f64) -> u64 {
         let quote_in_after_fee = quote_in as f64 * (1.0 - fee);
-        
+
         // Base_out = (Quote_in_net * Base_Reserve) / (Quote_Reserve + Quote_in_net)
         let numerator = quote_in_after_fee * self.base_reserve as f64;
         let denominator = self.quote_reserve as f64 + quote_in_after_fee;
-        
+
         // 向下取整
         (numerator / denominator) as u64
     }
@@ -1081,15 +1097,15 @@ impl PoolPriceInfo {
     /// @returns 能得到的 Quote 数量 (u64)
     pub fn get_quote_out_from_base_in(&self, base_in: u64, fee: f64) -> u64 {
         let base_in_f = base_in as f64;
-        
+
         // 1. AMM公式计算毛输出 (Quote_Gross)
         let numerator = base_in_f * self.quote_reserve as f64;
         let denominator = self.base_reserve as f64 + base_in_f;
         let quote_out_gross = numerator / denominator;
-        
+
         // 2. 扣除手续费，得到净输出
         let quote_out_net = quote_out_gross * (1.0 - fee);
-        
+
         // 向下取整
         quote_out_net as u64
     }
@@ -1113,7 +1129,7 @@ impl PoolPriceInfo {
         let base_out_f = base_out as f64;
         let numerator = base_out_f * self.quote_reserve as f64;
         let denominator = (self.base_reserve as f64 - base_out_f) * (1.0 - fee);
-        
+
         // 向上取整
         (numerator / denominator).ceil() as u64
     }
@@ -1126,7 +1142,7 @@ impl PoolPriceInfo {
     pub fn get_base_in_for_quote_out(&self, quote_out: u64, fee: f64) -> u64 {
         // 1. 反推毛输出 (Quote_Gross)
         let quote_gross = quote_out as f64 / (1.0 - fee);
-        
+
         // 2. 检查储备是否足够支付毛输出
         if quote_gross >= self.quote_reserve as f64 {
             return u64::MAX;
@@ -1135,7 +1151,7 @@ impl PoolPriceInfo {
         // 3. AMM 反推所需 Base: Base_in = ceil( (Quote_Gross * Base_Reserve) / (Quote_Reserve - Quote_Gross) )
         let numerator = quote_gross * self.base_reserve as f64;
         let denominator = self.quote_reserve as f64 - quote_gross;
-        
+
         // 向上取整
         (numerator / denominator).ceil() as u64
     }
@@ -1148,13 +1164,13 @@ impl PoolPriceInfo {
     /// 返回一个新的 PoolPriceInfo 结构体。
     pub fn after_buy_quote_exact_in(&self, quote_in: u64, fee: f64) -> Self {
         let base_out = self.get_base_out_from_quote_in(quote_in, fee);
-        
+
         let new_quote_reserve = self.quote_reserve.saturating_add(quote_in);
         let new_base_reserve = self.base_reserve.saturating_sub(base_out);
-        
+
         // 重新计算价格
         let new_base_price_in_quote = new_quote_reserve as f64 / new_base_reserve as f64;
-        
+
         PoolPriceInfo {
             base_reserve: new_base_reserve,
             quote_reserve: new_quote_reserve,
@@ -1168,16 +1184,16 @@ impl PoolPriceInfo {
     pub fn after_sell_base_exact_in(&self, base_in: u64, fee: f64) -> Self {
         // 1. 计算毛输出 (Quote_Gross) - 用于更新储备
         let base_in_f = base_in as f64;
-        let quote_out_gross = (base_in_f * self.quote_reserve as f64)
-            / (self.base_reserve as f64 + base_in_f);
+        let quote_out_gross =
+            (base_in_f * self.quote_reserve as f64) / (self.base_reserve as f64 + base_in_f);
 
         let new_base_reserve = self.base_reserve.saturating_add(base_in);
         // 修正：使用毛输出更新储备
         let new_quote_reserve = self.quote_reserve.saturating_sub(quote_out_gross as u64);
-        
+
         // 重新计算价格
         let new_base_price_in_quote = new_quote_reserve as f64 / new_base_reserve as f64;
-        
+
         PoolPriceInfo {
             base_reserve: new_base_reserve,
             quote_reserve: new_quote_reserve,
@@ -1190,10 +1206,10 @@ impl PoolPriceInfo {
     /// 返回一个新的 PoolPriceInfo 结构体。
     pub fn after_buy_base_exact_out(&self, base_out: u64, fee: f64) -> Self {
         let quote_in = self.get_quote_in_for_base_out(base_out, fee);
-        
+
         let new_quote_reserve = self.quote_reserve.saturating_add(quote_in);
         let new_base_reserve = self.base_reserve.saturating_sub(base_out);
-        
+
         // 重新计算价格
         let new_base_price_in_quote = new_quote_reserve as f64 / new_base_reserve as f64;
 
@@ -1209,14 +1225,14 @@ impl PoolPriceInfo {
     /// 返回一个新的 PoolPriceInfo 结构体。
     pub fn after_sell_quote_exact_out(&self, quote_out: u64, fee: f64) -> Self {
         let base_in = self.get_base_in_for_quote_out(quote_out, fee);
-        
+
         // 1. 反推毛输出 (Quote_Gross) - 用于更新储备
         let quote_gross = quote_out as f64 / (1.0 - fee);
 
         let new_base_reserve = self.base_reserve.saturating_add(base_in);
         // 修正：使用毛输出更新储备
         let new_quote_reserve = self.quote_reserve.saturating_sub(quote_gross as u64);
-        
+
         // 重新计算价格
         let new_base_price_in_quote = new_quote_reserve as f64 / new_base_reserve as f64;
 
