@@ -784,10 +784,10 @@ impl MintDecimal for Pubkey {
 }
 
 pub fn flatten_main_instructions(
-    tx: VersionedTransaction,
+    tx: &VersionedTransaction,
     slot: u64,
 ) -> Result<Vec<IndexedInstruction>, ()> {
-    match tx.message {
+    match &tx.message {
         solana_sdk::message::VersionedMessage::Legacy(message) => {
             Ok(flatten_main_ix_from_legasy_msg(message, slot))
         }
@@ -802,7 +802,7 @@ pub fn flatten_main_ix_from_v0_msg(
         account_keys: accounts,
         instructions: ixs,
         ..
-    }: solana_sdk::message::v0::Message,
+    }: &solana_sdk::message::v0::Message,
     slot: u64,
 ) -> Vec<IndexedInstruction> {
     ixs.iter() // 遍历指令引用，不消耗原 ixs
@@ -842,7 +842,7 @@ pub fn flatten_main_ix_from_legasy_msg(
         account_keys: accounts,
         instructions: ixs,
         ..
-    }: solana_sdk::message::Message,
+    }: &solana_sdk::message::Message,
     slot: u64,
 ) -> Vec<IndexedInstruction> {
     ixs.iter()
@@ -1073,4 +1073,16 @@ impl Default for PoolPriceInfo {
             last_updated: PoolTimeStr::now_utc(),
         }
     }
+}
+
+#[test]
+fn test_pool() {
+    let pool = PoolPriceInfo {
+        base_reserve: 1_073_000_000_000_000,
+        quote_reserve: 30_000_000_000,
+        ..Default::default()
+    };
+    println!("buy 20 sol: {}", pool.buy_base_with_quote(20.to_lamport(), 0.0));
+    println!("buy 50 sol: {}", pool.buy_base_with_quote(50.to_lamport(), 0.0));
+    println!("buy 85 sol: {}; total supply - buy: {}", pool.buy_base_with_quote(85.to_lamport(), 0.0),1_000_000_000_000_000 - pool.buy_base_with_quote(85.to_lamport(), 0.0));
 }
