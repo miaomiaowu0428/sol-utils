@@ -16,6 +16,8 @@ use solana_sdk::transaction::VersionedTransaction;
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::str::FromStr;
 use std::sync::LazyLock;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 use std::time::{Duration, Instant};
 use ta::Close;
 use ta::High;
@@ -1075,6 +1077,16 @@ impl Default for PoolPriceInfo {
     }
 }
 
+pub fn now() -> u64 {
+    // 1. 获取当前系统时间与 UNIX 纪元的时间差（处理可能的错误）
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("系统时间早于 UNIX 纪元（极少发生）");
+
+    // 2. 不同精度的时间戳
+    duration.as_secs()
+}
+
 #[test]
 fn test_pool() {
     let pool = PoolPriceInfo {
@@ -1082,7 +1094,21 @@ fn test_pool() {
         quote_reserve: 30_000_000_000,
         ..Default::default()
     };
-    println!("buy 20 sol: {}", pool.buy_base_with_quote(20.to_lamport(), 0.0));
-    println!("buy 50 sol: {}", pool.buy_base_with_quote(50.to_lamport(), 0.0));
-    println!("buy 85 sol: {}; total supply - buy: {}", pool.buy_base_with_quote(85.to_lamport(), 0.0),1_000_000_000_000_000 - pool.buy_base_with_quote(85.to_lamport(), 0.0));
+    println!(
+        "buy 20 sol: {}",
+        pool.buy_base_with_quote(20.to_lamport(), 0.0)
+    );
+    println!(
+        "buy 50 sol: {}",
+        pool.buy_base_with_quote(50.to_lamport(), 0.0)
+    );
+    println!(
+        "buy 80 sol: {}",
+        pool.buy_base_with_quote(80.to_lamport(), 0.0)
+    );
+    println!(
+        "buy 85 sol: {}; total supply - buy: {}",
+        pool.buy_base_with_quote(85.to_lamport(), 0.0),
+        1_000_000_000_000_000 - pool.buy_base_with_quote(85.to_lamport(), 0.0)
+    );
 }
