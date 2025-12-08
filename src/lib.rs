@@ -823,15 +823,15 @@ impl FetchAlt for RpcClient {
 }
 
 async fn get_or_fetch_alt(alt_address: Pubkey) -> Result<Vec<Pubkey>, ()> {
-    info!("fetching alt: {alt_address}");
+    // info!("fetching alt: {alt_address}");
     match ALTS.get(&alt_address).await {
         Some(alt) => {
             let res: Vec<Pubkey> = alt.value().clone();
-            info!("found alt cache for {alt_address}");
+            // info!("found alt cache for {alt_address}");
             Ok(res)
         }
         None => {
-            info!("didn't found alt cache for {alt_address}; fetching...");
+            // info!("didn't found alt cache for {alt_address}; fetching...");
             let alt_accounts = JSON_RPC_CLIENT.fetch_alt(&alt_address).await?;
             ALTS.insert(alt_address, alt_accounts.clone()).await;
             Ok(alt_accounts)
