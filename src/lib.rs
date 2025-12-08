@@ -4,17 +4,25 @@ use log::info;
 use log::warn;
 use serde::Deserialize;
 use serde::Serialize;
+use solana_address_lookup_table_interface::state::AddressLookupTable;
+use solana_client::nonblocking::rpc_client;
+use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_client::rpc_config::CommitmentConfig;
 use solana_sdk::bs58;
 use solana_sdk::hash::Hash;
+use solana_sdk::message::AddressLookupTableAccount;
 use solana_sdk::message::Instruction;
 use solana_sdk::message::compiled_instruction::CompiledInstruction;
+use solana_sdk::message::v0::MessageAddressTableLookup;
 use solana_sdk::program_error::ProgramError;
 use solana_sdk::pubkey;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use solana_sdk::transaction::VersionedTransaction;
 use spl_associated_token_account::get_associated_token_address_with_program_id;
+use std::env;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
@@ -23,6 +31,7 @@ use ta::Close;
 use ta::High;
 use ta::Low;
 use tokio::sync::RwLock;
+use whirlwind::ShardMap;
 
 pub mod macros;
 pub mod pool_calculation;
@@ -785,7 +794,50 @@ impl MintDecimal for Pubkey {
     }
 }
 
-pub fn flatten_main_instructions(
+pub static JSON_RPC_CLIENT: LazyLock<Arc<RpcClient>> = LazyLock::new(|| {
+    let url = env::var("JSON_RPC_URL").expect("JSON_RPC_URL not set");
+    Arc::new(RpcClient::new_with_commitment(
+        url,
+        CommitmentConfig::processed(),
+    ))
+});
+
+pub static ALTS: LazyLock<ShardMap<Pubkey, Vec<Pubkey>>> =
+    LazyLock::new(|| ShardMap::with_shards(16));
+
+#[async_trait::async_trait]
+pub trait FetchAlt {
+    async fn fetch_alt(&self, address: &Pubkey) -> Result<Vec<Pubkey>, ()>;
+}
+
+#[async_trait::async_trait]
+impl FetchAlt for RpcClient {
+    async fn fetch_alt(&self, address: &Pubkey) -> Result<Vec<Pubkey>, ()> {
+        if let Ok(alt_account_data) = self.get_account_data(&address).await {
+            if let Ok(alt_addresses) = AddressLookupTable::deserialize(&alt_account_data) {
+                return Ok(alt_addresses.addresses.to_vec());
+            }
+        }
+        Err(())
+    }
+}
+
+async fn get_or_fetch_alt(alt_address: Pubkey) -> Result<Vec<Pubkey>, ()> {
+    info!("fetching alt: {alt_address}");
+    match ALTS.get(&alt_address).await {
+        Some(alt) => {
+            let res: Vec<Pubkey> = alt.value().clone();
+            Ok(res)
+        }
+        None => {
+            let alt_accounts = JSON_RPC_CLIENT.fetch_alt(&alt_address).await?;
+            ALTS.insert(alt_address, alt_accounts.clone()).await;
+            Ok(alt_accounts)
+        }
+    }
+}
+
+pub async fn flatten_main_instructions(
     tx: &VersionedTransaction,
     slot: u64,
 ) -> Result<Vec<IndexedInstruction>, ()> {
@@ -794,19 +846,44 @@ pub fn flatten_main_instructions(
             Ok(flatten_main_ix_from_legasy_msg(message, slot))
         }
         solana_sdk::message::VersionedMessage::V0(message) => {
-            Ok(flatten_main_ix_from_v0_msg(message, slot))
+            Ok(flatten_main_ix_from_v0_msg(message, slot).await)
         }
     }
 }
 
-pub fn flatten_main_ix_from_v0_msg(
+pub async fn flatten_main_ix_from_v0_msg(
     solana_sdk::message::v0::Message {
         account_keys: accounts,
         instructions: ixs,
+        address_table_lookups,
         ..
     }: &solana_sdk::message::v0::Message,
     slot: u64,
 ) -> Vec<IndexedInstruction> {
+    let mut alt_realonly: Vec<Pubkey> = vec![];
+    let mut alt_writable: Vec<Pubkey> = vec![];
+    for MessageAddressTableLookup {
+        account_key,
+        writable_indexes,
+        readonly_indexes,
+    } in address_table_lookups
+    {
+        let Ok(alt_onchain) = get_or_fetch_alt(*account_key).await else {
+            continue;
+        };
+        for addr in &alt_onchain{
+            info!("found addr: {addr} in alt: {account_key}");
+        }
+        for i in readonly_indexes {
+            alt_realonly.push(*alt_onchain.get(*i as usize).unwrap_or(&Pubkey::default()))
+        }
+        for i in writable_indexes {
+            alt_writable.push(*alt_onchain.get(*i as usize).unwrap_or(&Pubkey::default()))
+        }
+    }
+    let mut accounts = accounts.clone();
+    accounts.extend(alt_writable);
+    accounts.extend(alt_realonly);
     ixs.iter() // 遍历指令引用，不消耗原 ixs
         .enumerate()
         .map(|(index, ix)| {
