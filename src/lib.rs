@@ -873,9 +873,6 @@ pub async fn flatten_main_ix_from_v0_msg(
         let Ok(alt_onchain) = get_or_fetch_alt(*account_key).await else {
             continue;
         };
-        for addr in &alt_onchain{
-            info!("found addr: {addr} in alt: {account_key}");
-        }
         for i in readonly_indexes {
             alt_realonly.push(*alt_onchain.get(*i as usize).unwrap_or(&Pubkey::default()))
         }
