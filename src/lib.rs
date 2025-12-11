@@ -33,6 +33,7 @@ use ta::Low;
 use tokio::sync::RwLock;
 use whirlwind::ShardMap;
 
+pub mod parse_rpc_fetched_json;
 pub mod macros;
 pub mod pool_calculation;
 
