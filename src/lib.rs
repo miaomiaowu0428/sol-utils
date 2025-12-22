@@ -31,8 +31,8 @@ use ta::Low;
 use tokio::sync::RwLock;
 use whirlwind::ShardMap;
 
-pub mod parse_rpc_fetched_json;
 pub mod macros;
+pub mod parse_rpc_fetched_json;
 pub mod pool_calculation;
 pub mod time;
 
@@ -871,6 +871,12 @@ pub async fn flatten_main_ix_from_v0_msg(
     } in address_table_lookups
     {
         let Ok(alt_onchain) = get_or_fetch_alt(*account_key).await else {
+            for i in readonly_indexes {
+                alt_realonly.push(Pubkey::default())
+            }
+            for i in writable_indexes {
+                alt_writable.push(Pubkey::default())
+            }
             continue;
         };
         for i in readonly_indexes {
