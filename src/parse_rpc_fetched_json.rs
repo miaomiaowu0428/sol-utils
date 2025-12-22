@@ -53,6 +53,12 @@ pub async fn parse_fetched_json(
         {
             let Ok(alt_onchain) = get_or_fetch_alt(Pubkey::from_str(&account_key).unwrap()).await
             else {
+                for _ in readonly_indexes {
+                    alt_realonly.push(Pubkey::default())
+                }
+                for _ in writable_indexes {
+                    alt_writable.push(Pubkey::default())
+                }
                 continue;
             };
             for i in readonly_indexes {
