@@ -4,7 +4,7 @@ macro_rules! log_time {
         let start = std::time::Instant::now();
         let result = $expr;
         let elapsed = start.elapsed();
-        let ms = elapsed.as_micros() as f64 / 1000.0;
+        let ms = elapsed.as_secs_f64() * 1000.0;
         info!("[timeit] {} cost {:.3} ms", $name, ms);
         result
     }};
@@ -16,7 +16,7 @@ macro_rules! timeit {
         let start = std::time::Instant::now();
         let result = $expr;
         let elapsed = start.elapsed();
-        let ms = elapsed.as_micros() as f64 / 1000.0;
+        let ms = elapsed.as_secs_f64() * 1000.0;
         (result, ms)
     }};
 }
