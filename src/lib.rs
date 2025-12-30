@@ -31,11 +31,11 @@ use ta::Low;
 use tokio::sync::RwLock;
 use whirlwind::ShardMap;
 
+pub mod async_utils;
 pub mod macros;
 pub mod parse_rpc_fetched_json;
 pub mod pool_calculation;
 pub mod time;
-pub mod async_utils;
 pub trait SolToLamport {
     fn to_lamport(self) -> u64;
 }
@@ -1193,4 +1193,13 @@ fn test_pool() {
         pool.buy_base_with_quote(85.to_lamport(), 0.0),
         1_000_000_000_000_000 - pool.buy_base_with_quote(85.to_lamport(), 0.0)
     );
+}
+
+pub trait Signers {
+    fn signers(&self) -> Vec<Pubkey>;
+}
+impl Signers for VersionedTransaction {
+    fn signers(&self) -> Vec<Pubkey> {
+        self.message.static_account_keys()[..self.signatures.len()].to_vec()
+    }
 }
