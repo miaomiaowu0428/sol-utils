@@ -551,6 +551,11 @@ pub struct PoolPriceInfo {
     pub base_price_in_quote: f64,  // 1个base币等于多少quote币
     pub last_updated: PoolTimeStr, // UTC、无年份、精确到0.xx秒
 }
+impl PoolPriceInfo {
+    pub fn update_price(&mut self) {
+        self.base_price_in_quote = self.quote_reserve as f64 / self.base_reserve as f64
+    }
+}
 impl PartialEq for PoolPriceInfo {
     fn eq(&self, other: &Self) -> bool {
         self.base_reserve == other.base_reserve && self.quote_reserve == other.quote_reserve
