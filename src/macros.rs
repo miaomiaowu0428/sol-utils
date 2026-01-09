@@ -207,3 +207,23 @@ macro_rules! global_broadcast {
         }
     };
 }
+
+#[macro_export]
+macro_rules! retry {
+    ($times:expr, $expr:expr) => {{
+        let mut last_err = None;
+        let mut i = 0;
+        loop {
+            match $expr {
+                Ok(val) => break Ok(val),
+                Err(e) => {
+                    last_err = Some(e);
+                }
+            }
+            i += 1;
+            if i >= $times {
+                break Err(last_err);
+            }
+        }
+    }};
+}
