@@ -904,10 +904,7 @@ pub async fn flatten_main_ix_from_v0_msg(
                 .map(|&acc_idx| {
                     // 解构 &u8 → u8（因为 ix.accounts 是 Vec<u8>）
                     // 1. 索引转 usize；2. 取账户引用；3. 克隆成所有权类型（&Pubkey → Pubkey）
-                    accounts
-                        .get(acc_idx as usize)
-                        .unwrap_or(&Pubkey::default())
-                        .clone()
+                    *accounts.get(acc_idx as usize).unwrap_or(&Pubkey::default())
                 })
                 .collect(); // 现在元素是 Pubkey，可正常收集
 
@@ -915,7 +912,7 @@ pub async fn flatten_main_ix_from_v0_msg(
                 index: index.to_string(),
                 instruction: ParsedInstruction {
                     // 关键：accounts 是 Vec<Pubkey>，索引访问返回 &Pubkey，需 clone 转所有权
-                    program: accounts[ix.program_id_index as usize].clone(),
+                    program: accounts[ix.program_id_index as usize],
                     accounts: ix_accounts,
                     data: ix.data.clone(), // data 是 Vec<u8>，clone 得到所有权
                     slot,
