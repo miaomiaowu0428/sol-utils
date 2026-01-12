@@ -760,7 +760,7 @@ impl PoolPriceInfo {
     }
 
     /// 卖出：卖出指定数量的base，能得到多少quote
-    /// base_in: 卖出的base数量  
+    /// base_in: 卖出的base数量
     /// fee: 手续费率
     /// 返回：能得到的quote数量
     pub fn quote_from_selling_base(&self, base_in: u64, fee: f64) -> u64 {
@@ -1131,19 +1131,19 @@ pub fn build_close_ata_ix(
 ) -> Result<Instruction, ProgramError> {
     if token_program_id == &spl_token::ID {
         spl_token::instruction::close_account(
-            &token_program_id,   // token_program_id
-            &account_pubkey,     // account_to_close (ATA)
-            &destination_pubkey, // destination (接收剩余 SOL)
-            &owner_pubkey,       // owner
-            &signer_pubkeys,     // multisigners
+            token_program_id,   // token_program_id
+            account_pubkey,     // account_to_close (ATA)
+            destination_pubkey, // destination (接收剩余 SOL)
+            owner_pubkey,       // owner
+            signer_pubkeys,     // multisigners
         )
     } else if token_program_id == &spl_token_2022::ID {
         spl_token_2022::instruction::close_account(
-            &token_program_id,   // token_program_id
-            &account_pubkey,     // account_to_close (ATA)
-            &destination_pubkey, // destination (接收剩余 SOL)
-            &owner_pubkey,       // owner
-            &signer_pubkeys,     // multisigners
+            token_program_id,   // token_program_id
+            account_pubkey,     // account_to_close (ATA)
+            destination_pubkey, // destination (接收剩余 SOL)
+            owner_pubkey,       // owner
+            signer_pubkeys,     // multisigners
         )
     } else {
         Err(ProgramError::InvalidAccountData)
@@ -1174,37 +1174,16 @@ pub fn now() -> u64 {
     duration.as_secs()
 }
 
-#[test]
-fn test_pool() {
-    let pool = PoolPriceInfo {
-        base_reserve: 1_073_000_000_000_000,
-        quote_reserve: 30_000_000_000,
-        ..Default::default()
-    };
-    println!(
-        "buy 20 sol: {}",
-        pool.buy_base_with_quote(20.to_lamport(), 0.0)
-    );
-    println!(
-        "buy 50 sol: {}",
-        pool.buy_base_with_quote(50.to_lamport(), 0.0)
-    );
-    println!(
-        "buy 80 sol: {}",
-        pool.buy_base_with_quote(80.to_lamport(), 0.0)
-    );
-    println!(
-        "buy 85 sol: {}; total supply - buy: {}",
-        pool.buy_base_with_quote(85.to_lamport(), 0.0),
-        1_000_000_000_000_000 - pool.buy_base_with_quote(85.to_lamport(), 0.0)
-    );
-}
-
 pub trait Signers {
     fn signers(&self) -> Vec<Pubkey>;
 }
 impl Signers for VersionedTransaction {
     fn signers(&self) -> Vec<Pubkey> {
-        self.message.static_account_keys()[..self.signatures.len()].to_vec()
+        self.message
+            .static_account_keys()
+            .iter()
+            .take(self.signatures.len())
+            .copied()
+            .collect()
     }
 }
