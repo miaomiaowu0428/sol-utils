@@ -8,7 +8,7 @@ pub trait UnitConverter {
     fn to_micro_lamports(self) -> u64;
     
     /// 从 MicroLamports 转回当前单位 (通常用于计算最终支付的 Lamports)
-    fn from_micro_lamports(self) -> u64;
+    fn micro_to_lamports(self) -> u64;
 }
 
 // 为 u64 实现 (通常代表 Lamports)
@@ -17,7 +17,7 @@ impl UnitConverter for u64 {
         self.saturating_mul(MICROLAMPORTS_PER_LAMPORT)
     }
 
-    fn from_micro_lamports(self) -> u64 {
+    fn micro_to_lamports(self) -> u64 {
         self / MICROLAMPORTS_PER_LAMPORT
     }
 }
@@ -28,7 +28,7 @@ impl UnitConverter for f64 {
         (self * (LAMPORTS_PER_SOL as f64) * (MICROLAMPORTS_PER_LAMPORT as f64)) as u64
     }
 
-    fn from_micro_lamports(self) -> u64 {
+    fn micro_to_lamports(self) -> u64 {
         (self / (MICROLAMPORTS_PER_LAMPORT as f64)) as u64
     }
 }
