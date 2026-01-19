@@ -229,7 +229,7 @@ macro_rules! retry {
 }
 
 
-
+#[macro_export]
 macro_rules! impl_enum_getters {
     ($enum_name:ident, $( $field:ident : $ret:ty ),* $(,)?) => {
         impl $enum_name {
