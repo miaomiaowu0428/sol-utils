@@ -1186,3 +1186,23 @@ impl Signers for VersionedTransaction {
             .collect()
     }
 }
+
+
+
+
+/// 将 Pubkey 序列化为字符串
+fn serialize_pubkey<S>(pubkey: &Pubkey, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(&pubkey.to_string())
+}
+
+/// 将字符串反序列化为 Pubkey
+fn deserialize_pubkey<'de, D>(deserializer: D) -> Result<Pubkey, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    std::str::FromStr::from_str(&s).map_err(serde::de::Error::custom)
+}
