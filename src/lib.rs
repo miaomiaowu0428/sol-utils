@@ -1191,7 +1191,7 @@ impl Signers for VersionedTransaction {
 
 
 /// 将 Pubkey 序列化为字符串
-fn serialize_pubkey<S>(pubkey: &Pubkey, serializer: S) -> Result<S::Ok, S::Error>
+pub fn serialize_pubkey<S>(pubkey: &Pubkey, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
@@ -1199,7 +1199,7 @@ where
 }
 
 /// 将字符串反序列化为 Pubkey
-fn deserialize_pubkey<'de, D>(deserializer: D) -> Result<Pubkey, D::Error>
+pub fn deserialize_pubkey<'de, D>(deserializer: D) -> Result<Pubkey, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
