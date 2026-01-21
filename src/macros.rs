@@ -245,8 +245,6 @@ macro_rules! retry {
 //     };
 // }
 
-
-
 #[macro_export]
 macro_rules! impl_enum_getters {
     (
@@ -256,14 +254,22 @@ macro_rules! impl_enum_getters {
     ) => {
         impl $enum_name {
             $(
-                pub fn $field(&self) -> $ret {
-                    match self {
-                        $(
-                            $enum_name::$variant(inner) => inner.$field,
-                        )+
-                    }
-                }
+                impl_enum_getters!(@one $enum_name, [$($variant),+], $field : $ret);
             )+
+        }
+    };
+
+    (@one
+        $enum_name:ident,
+        [ $( $variant:ident ),+ ],
+        $field:ident : $ret:ty
+    ) => {
+        pub fn $field(&self) -> $ret {
+            match self {
+                $(
+                    $enum_name::$variant(inner) => inner.$field,
+                )+
+            }
         }
     };
 }
