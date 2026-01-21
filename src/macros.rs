@@ -249,17 +249,17 @@ macro_rules! retry {
 macro_rules! impl_enum_getters {
     (
         $enum_name:ident,
-        variants = [ $( $variant:ident ),+ ],
-        fields = [ $( $field:ident : $ret:ty ),+ ]
+        variants = $variants:tt,
+        fields = [ $( $field:ident : $ret:ty ),+ $(,)? ]
     ) => {
         impl $enum_name {
             $(
-                impl_enum_getters!(@one $enum_name, [$($variant),+], $field : $ret);
+                impl_enum_getters!(@field $enum_name, $variants, $field : $ret);
             )+
         }
     };
 
-    (@one
+    (@field
         $enum_name:ident,
         [ $( $variant:ident ),+ ],
         $field:ident : $ret:ty
