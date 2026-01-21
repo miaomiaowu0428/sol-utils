@@ -50,12 +50,14 @@ pub async fn accounts_of(message: &UiRawMessage) -> Vec<Pubkey> {
 }
 
 pub async fn parse_fetched_json(
-    EncodedConfirmedTransactionWithStatusMeta {
+    tx: impl Into<EncodedConfirmedTransactionWithStatusMeta>,
+) -> Vec<IndexedInstruction> {
+    let EncodedConfirmedTransactionWithStatusMeta {
         slot,
         transaction,
-        block_time: _block_time,
-    }: EncodedConfirmedTransactionWithStatusMeta,
-) -> Vec<IndexedInstruction> {
+        block_time: _,
+    } =  tx.into();
+
     // println!("{transaction:#?}");
     let EncodedTransactionWithStatusMeta {
         transaction, meta, ..
@@ -147,7 +149,8 @@ pub async fn balance_change_of(
         transaction,
         meta: Some(meta),
         ..
-    } = transaction else {
+    } = transaction
+    else {
         return Err("meta not found".into());
     };
 
@@ -176,10 +179,8 @@ pub async fn balance_change_of(
     // ===============================
     // 4 Token balance diff
     // ===============================
-    let token_changes = if let (
-        OptionSerializer::Some(pre),
-        OptionSerializer::Some(post),
-    ) = (&meta.pre_token_balances, &meta.post_token_balances)
+    let token_changes = if let (OptionSerializer::Some(pre), OptionSerializer::Some(post)) =
+        (&meta.pre_token_balances, &meta.post_token_balances)
     {
         diff_token_balances(pre, post)?
     } else {
@@ -189,22 +190,16 @@ pub async fn balance_change_of(
     // ===============================
     // 5 合并结果
     // ===============================
-    let changes = merge_balance_changes([
-        sol_changes,
-        token_changes,
-    ]);
+    let changes = merge_balance_changes([sol_changes, token_changes]);
 
     Ok(changes)
 }
-
-
 
 pub struct SolBalanceInput<'a> {
     pub owners: &'a [Pubkey],
     pub pre_balances: &'a [u64],
     pub post_balances: &'a [u64],
 }
-
 
 pub fn diff_sol_balances(input: SolBalanceInput) -> Vec<BalanceChange> {
     let mut changes = Vec::new();
@@ -229,7 +224,6 @@ pub fn diff_sol_balances(input: SolBalanceInput) -> Vec<BalanceChange> {
     changes
 }
 
-
 pub struct TokenBalanceInput<'a> {
     pub pre: &'a [UiTransactionTokenBalance],
     pub post: &'a [UiTransactionTokenBalance],
@@ -245,16 +239,24 @@ pub fn diff_token_balances(
     let mut post_map: HashMap<(Pubkey, Pubkey), &UiTransactionTokenBalance> = HashMap::new();
 
     for tb in pre_tokens {
-        let owner = tb.owner.as_ref().ok_or("token owner missing")?
-            .parse::<Pubkey>().map_err(|e| e.to_string())?;
+        let owner = tb
+            .owner
+            .as_ref()
+            .ok_or("token owner missing")?
+            .parse::<Pubkey>()
+            .map_err(|e| e.to_string())?;
         let mint = tb.mint.parse::<Pubkey>().map_err(|e| e.to_string())?;
 
         pre_map.insert((owner, mint), tb);
     }
 
     for tb in post_tokens {
-        let owner = tb.owner.as_ref().ok_or("token owner missing")?
-            .parse::<Pubkey>().map_err(|e| e.to_string())?;
+        let owner = tb
+            .owner
+            .as_ref()
+            .ok_or("token owner missing")?
+            .parse::<Pubkey>()
+            .map_err(|e| e.to_string())?;
         let mint = tb.mint.parse::<Pubkey>().map_err(|e| e.to_string())?;
 
         post_map.insert((owner, mint), tb);
@@ -266,8 +268,11 @@ pub fn diff_token_balances(
             .and_then(|tb| tb.ui_token_amount.amount.parse::<u64>().ok())
             .unwrap_or(0);
 
-        let post_amount = post.ui_token_amount.amount
-            .parse::<u64>().map_err(|e| e.to_string())?;
+        let post_amount = post
+            .ui_token_amount
+            .amount
+            .parse::<u64>()
+            .map_err(|e| e.to_string())?;
 
         if pre_amount != post_amount {
             changes.push(BalanceChange {
@@ -283,7 +288,6 @@ pub fn diff_token_balances(
 
     Ok(changes)
 }
-
 
 pub fn merge_balance_changes<I>(parts: I) -> Vec<BalanceChange>
 where
