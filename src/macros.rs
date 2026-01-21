@@ -229,18 +229,41 @@ macro_rules! retry {
 }
 
 
+// #[macro_export]
+// macro_rules! impl_enum_getters {
+//     ($enum_name:ident, $( $field:ident : $ret:ty ),* $(,)?) => {
+//         impl $enum_name {
+//             $(
+//                 pub fn $field(&self) -> $ret {
+//                     match self {
+//                         $enum_name::V1(inner) => inner.$field,
+//                         $enum_name::V2(inner) => inner.$field,
+//                     }
+//                 }
+//             )*
+//         }
+//     };
+// }
+
+
+
 #[macro_export]
 macro_rules! impl_enum_getters {
-    ($enum_name:ident, $( $field:ident : $ret:ty ),* $(,)?) => {
+    (
+        $enum_name:ident,
+        variants = [ $( $variant:ident ),+ ],
+        fields = [ $( $field:ident : $ret:ty ),+ ]
+    ) => {
         impl $enum_name {
             $(
                 pub fn $field(&self) -> $ret {
                     match self {
-                        $enum_name::V1(inner) => inner.$field,
-                        $enum_name::V2(inner) => inner.$field,
+                        $(
+                            $enum_name::$variant(inner) => inner.$field,
+                        )+
                     }
                 }
-            )*
+            )+
         }
     };
 }
