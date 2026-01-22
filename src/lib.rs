@@ -1198,9 +1198,6 @@ impl Signers for VersionedTransaction {
     }
 }
 
-
-
-
 /// 将 Pubkey 序列化为字符串
 pub fn serialize_pubkey<S>(pubkey: &Pubkey, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -1218,10 +1215,9 @@ where
     std::str::FromStr::from_str(&s).map_err(serde::de::Error::custom)
 }
 
-
-
 pub fn init_logger() {
-    Logger::with(LevelFilter::Info)
+    let env_config = flexi_logger::EnvConfig::default().set_default(LevelFilter::Info);
+    Logger::with(env_config)
         .format(custom_format)
         .rotate(
             Criterion::AgeOrSize(Age::Day, 20 * 1024 * 1024),
@@ -1237,7 +1233,11 @@ pub fn init_logger() {
         .unwrap();
 }
 
-pub fn custom_format(w: &mut dyn std::io::Write, now: &mut DeferredNow, record: &Record) -> std::io::Result<()> {
+pub fn custom_format(
+    w: &mut dyn std::io::Write,
+    now: &mut DeferredNow,
+    record: &Record,
+) -> std::io::Result<()> {
     write!(
         w,
         "[{}] {} [{}] {}:{} - {}",
