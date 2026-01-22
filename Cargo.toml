@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.88.0"
 
 [dependencies]
-chrono = "0.4.42"
+chrono = "0.4.43"
 log = "0.4.29"
 serde = "1.0.228"
 solana-sdk = "3.0.0"
@@ -13,16 +13,16 @@ ta = "0.5.0"
 grpc-client = { git = "https://github.com/miaomiaowu0428/grpc-client.git" }
 spl-associated-token-account = "8.0.0"
 anyhow = "1.0.100"
-tokio = "1.48.0"
-solana-client = "3.1.5"
-serde_json = "1.0.148"
+tokio = "1.49.0"
+solana-client = "3.1.7"
+serde_json = "1.0.149"
 spl-token = { version = "9.0.0", features = ["no-entrypoint"] }
 spl-token-2022 = { version = "10.0.0", features = ["no-entrypoint"] }
 whirlwind = { git = "https://github.com/miaomiaowu0428/whirlwind.git" }
 async-trait = "0.1.89"
-solana-address-lookup-table-interface = "3.0.0"
-solana-transaction-status-client-types = "3.1.5"
+solana-address-lookup-table-interface = "3.0.1"
+solana-transaction-status-client-types = "3.1.7"
 bs58 = "0.5.1"
 dotenvy = "0.15.7"
 futures = "0.3.31"
-flexi_logger = "0.31.7"
+flexi_logger = "0.31.8"

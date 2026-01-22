@@ -6,7 +6,7 @@ use solana_transaction_status_client_types::{
     EncodedTransactionWithStatusMeta, UiAddressTableLookup, UiCompiledInstruction, UiInstruction,
     UiMessage, UiRawMessage, UiTransaction, UiTransactionStatusMeta, UiTransactionTokenBalance,
 };
-use std::{collections::HashMap, str::FromStr};
+use std::{collections::{HashMap, HashSet}, str::FromStr};
 
 use crate::{IndexedInstruction, get_or_fetch_alt};
 
@@ -125,23 +125,39 @@ pub async fn parse_fetched_json(
     res
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BalanceChange {
-    owner: Pubkey,
-    mint: Pubkey,
-    pre_balance: u64,
-    after_balance: u64,
-    change: i128,
-    decimal: u8,
+    pub owner: Pubkey,
+    pub mint: Pubkey,
+    pub pre_balance: u64,
+    pub after_balance: u64,
+    pub change: i128,
+    pub decimal: u8,
+}
+
+impl BalanceChange {
+    pub fn combine(&self, other: &BalanceChange) -> BalanceChange {
+        assert_eq!(self.owner, other.owner);
+        assert_eq!(self.decimal, other.decimal);
+        BalanceChange {
+            owner: self.owner,
+            mint: self.mint,
+            pre_balance: self.pre_balance + other.pre_balance,
+            after_balance: self.after_balance + other.after_balance,
+            change: self.change + other.change,
+            decimal: self.decimal,
+        }
+    }
 }
 
 pub async fn balance_change_of(
-    EncodedConfirmedTransactionWithStatusMeta {
-        slot: _slot,
-        transaction,
-        block_time: _block_time,
-    }: EncodedConfirmedTransactionWithStatusMeta,
+    tx: impl Into<EncodedConfirmedTransactionWithStatusMeta>,
 ) -> Result<Vec<BalanceChange>, String> {
+    let EncodedConfirmedTransactionWithStatusMeta {
+        slot,
+        transaction,
+        block_time: _,
+    } = tx.into();
     // ===============================
     // 1 拿 meta
     // ===============================
@@ -204,18 +220,17 @@ pub struct SolBalanceInput<'a> {
 pub fn diff_sol_balances(input: SolBalanceInput) -> Vec<BalanceChange> {
     let mut changes = Vec::new();
 
-    for (i, pre) in input.pre_balances.iter().enumerate() {
-        let post = input.post_balances[i];
+    for (i, owner) in input.owners.iter().enumerate() {
+        let pre = *input.pre_balances.get(i).unwrap_or(&0);
+        let post = *input.post_balances.get(i).unwrap_or(&0);
 
-        if pre != &post {
-            let change = post as i128 - *pre as i128;
-
+        if pre != post {
             changes.push(BalanceChange {
-                owner: input.owners[i],
+                owner: *owner,
                 mint: Pubkey::default(),
-                pre_balance: *pre,
+                pre_balance: pre,
                 after_balance: post,
-                change,
+                change: post as i128 - pre as i128,
                 decimal: 9,
             });
         }
@@ -224,70 +239,55 @@ pub fn diff_sol_balances(input: SolBalanceInput) -> Vec<BalanceChange> {
     changes
 }
 
-pub struct TokenBalanceInput<'a> {
-    pub pre: &'a [UiTransactionTokenBalance],
-    pub post: &'a [UiTransactionTokenBalance],
-}
-
 pub fn diff_token_balances(
     pre_tokens: &[UiTransactionTokenBalance],
     post_tokens: &[UiTransactionTokenBalance],
 ) -> Result<Vec<BalanceChange>, String> {
     let mut changes = Vec::new();
 
-    let mut pre_map: HashMap<(Pubkey, Pubkey), &UiTransactionTokenBalance> = HashMap::new();
-    let mut post_map: HashMap<(Pubkey, Pubkey), &UiTransactionTokenBalance> = HashMap::new();
+    let mut all_keys = HashSet::new();
+    let mut pre_map: HashMap<(Pubkey, Pubkey), u64> = HashMap::new();
+    let mut post_map: HashMap<(Pubkey, Pubkey), u64> = HashMap::new();
+    let mut decimals_map: HashMap<(Pubkey, Pubkey), u8> = HashMap::new();
 
     for tb in pre_tokens {
-        let owner = tb
-            .owner
-            .as_ref()
-            .ok_or("token owner missing")?
-            .parse::<Pubkey>()
-            .map_err(|e| e.to_string())?;
+        let owner = tb.owner.as_ref().ok_or("token owner missing")?.parse::<Pubkey>().map_err(|e| e.to_string())?;
         let mint = tb.mint.parse::<Pubkey>().map_err(|e| e.to_string())?;
-
-        pre_map.insert((owner, mint), tb);
+        let amount = tb.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
+        pre_map.insert((owner, mint), amount);
+        decimals_map.insert((owner, mint), tb.ui_token_amount.decimals);
+        all_keys.insert((owner, mint));
     }
 
     for tb in post_tokens {
-        let owner = tb
-            .owner
-            .as_ref()
-            .ok_or("token owner missing")?
-            .parse::<Pubkey>()
-            .map_err(|e| e.to_string())?;
+        let owner = tb.owner.as_ref().ok_or("token owner missing")?.parse::<Pubkey>().map_err(|e| e.to_string())?;
         let mint = tb.mint.parse::<Pubkey>().map_err(|e| e.to_string())?;
-
-        post_map.insert((owner, mint), tb);
+        let amount = tb.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
+        post_map.insert((owner, mint), amount);
+        decimals_map.insert((owner, mint), tb.ui_token_amount.decimals);
+        all_keys.insert((owner, mint));
     }
 
-    for ((owner, mint), post) in post_map {
-        let pre_amount = pre_map
-            .get(&(owner, mint))
-            .and_then(|tb| tb.ui_token_amount.amount.parse::<u64>().ok())
-            .unwrap_or(0);
+    for key in all_keys {
+        let pre = *pre_map.get(&key).unwrap_or(&0);
+        let post = *post_map.get(&key).unwrap_or(&0);
+        let decimal = *decimals_map.get(&key).unwrap_or(&0);
 
-        let post_amount = post
-            .ui_token_amount
-            .amount
-            .parse::<u64>()
-            .map_err(|e| e.to_string())?;
-
-        if pre_amount != post_amount {
+        if pre != post {
             changes.push(BalanceChange {
-                owner,
-                mint,
-                pre_balance: pre_amount,
-                after_balance: post_amount,
-                change: post_amount as i128 - pre_amount as i128,
-                decimal: post.ui_token_amount.decimals,
+                owner: key.0,
+                mint: key.1,
+                pre_balance: pre,
+                after_balance: post,
+                change: post as i128 - pre as i128,
+                decimal,
             });
         }
     }
 
     Ok(changes)
 }
+
 
 pub fn merge_balance_changes<I>(parts: I) -> Vec<BalanceChange>
 where
