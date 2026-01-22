@@ -1240,9 +1240,10 @@ pub fn init_logger() {
 pub fn custom_format(w: &mut dyn std::io::Write, now: &mut DeferredNow, record: &Record) -> std::io::Result<()> {
     write!(
         w,
-        "[{}] {} [{}:{}] - {}",
+        "[{}] {} [{}] {}:{} - {}",
         now.format("%Y-%m-%d %H:%M:%S%.6f %:z"),     // 时间戳
         record.level(),                              // 日志级别
+        record.module_path().unwrap_or("<unnamed>"), // 模块名 (例如 unshred_client_lib::config)
         record
             .file()
             .and_then(|f| Path::new(f).file_name())
