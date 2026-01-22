@@ -1,4 +1,14 @@
+use flexi_logger::Age;
+use flexi_logger::Cleanup;
+use flexi_logger::Criterion;
+use flexi_logger::DeferredNow;
+use flexi_logger::Duplicate;
+use flexi_logger::FileSpec;
+use flexi_logger::Logger;
+use flexi_logger::Naming;
 use grpc_client::TransactionFormat;
+use log::LevelFilter;
+use log::Record;
 use log::error;
 use log::info;
 use log::warn;
@@ -19,6 +29,7 @@ use solana_sdk::signature::Signature;
 use solana_sdk::transaction::VersionedTransaction;
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use std::env;
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -1205,4 +1216,39 @@ where
 {
     let s = String::deserialize(deserializer)?;
     std::str::FromStr::from_str(&s).map_err(serde::de::Error::custom)
+}
+
+
+
+pub fn init_logger() {
+    Logger::with(LevelFilter::Info)
+        .format(custom_format)
+        .rotate(
+            Criterion::AgeOrSize(Age::Day, 20 * 1024 * 1024),
+            Naming::TimestampsCustomFormat {
+                current_infix: None,
+                format: "%Y%m%d_%H%M%S",
+            },
+            Cleanup::Never,
+        )
+        .log_to_file(FileSpec::default())
+        .duplicate_to_stdout(Duplicate::All)
+        .start()
+        .unwrap();
+}
+
+pub fn custom_format(w: &mut dyn std::io::Write, now: &mut DeferredNow, record: &Record) -> std::io::Result<()> {
+    write!(
+        w,
+        "[{}] {} [{}:{}] - {}",
+        now.format("%Y-%m-%d %H:%M:%S%.6f %:z"),     // 时间戳
+        record.level(),                              // 日志级别
+        record
+            .file()
+            .and_then(|f| Path::new(f).file_name())
+            .and_then(|s| s.to_str())
+            .unwrap_or("<unknown>"), // 仅文件名
+        record.line().unwrap_or(0),                  // 行号
+        &record.args()                               // 日志内容
+    )
 }
