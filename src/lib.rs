@@ -1216,8 +1216,8 @@ where
 }
 
 pub fn init_logger() {
-    let env_config = flexi_logger::EnvConfig::default().set_default(LevelFilter::Info);
-    Logger::with(env_config)
+    Logger::try_with_env() // 👈 从环境变量读
+        .unwrap_or_else(|_| Logger::with(LevelFilter::Info)) // 兜底
         .format(custom_format)
         .rotate(
             Criterion::AgeOrSize(Age::Day, 20 * 1024 * 1024),

@@ -56,7 +56,7 @@ pub async fn parse_fetched_json(
         slot,
         transaction,
         block_time: _,
-    } =  tx.into();
+    } = tx.into();
 
     // println!("{transaction:#?}");
     let EncodedTransactionWithStatusMeta {

@@ -6,7 +6,7 @@ pub const MICROLAMPORTS_PER_LAMPORT: u64 = 1_000_000;
 pub trait UnitConverter {
     /// 将当前单位转为 MicroLamports (用于和 CU Price 直接计算/比较)
     fn to_micro_lamports(self) -> u64;
-    
+
     /// 从 MicroLamports 转回当前单位 (通常用于计算最终支付的 Lamports)
     fn micro_to_lamports(self) -> u64;
 }
