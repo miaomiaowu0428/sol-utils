@@ -492,24 +492,30 @@ pub struct IndexedInstruction {
     pub slot: u64,
 }
 
+impl IndexedInstruction {
+    pub fn is_main_ix(&self) -> bool {
+        !self.index.contains('.')
+    }
+}
+
 pub fn flatten_instructions(tx: &TransactionFormat) -> Vec<IndexedInstruction> {
     use solana_sdk::pubkey::Pubkey;
     let mut result = Vec::new();
 
     // 获取主指令
     let main_instructions = tx.transation.message.instructions();
-    let account_keys: Vec<Pubkey> = tx.account_keys.iter().cloned().collect();
+    let account_keys: Vec<Pubkey> = tx.account_keys.to_vec();
     let mut inner_map = std::collections::HashMap::new();
 
     // 获取 slot 号
     let slot = tx.slot;
 
     // 收集内部指令
-    if let Some(meta) = &tx.meta {
-        if let Some(inner_instructions) = &meta.inner_instructions {
-            for group in inner_instructions {
-                inner_map.insert(group.index as usize, &group.instructions);
-            }
+    if let Some(meta) = &tx.meta
+        && let Some(inner_instructions) = &meta.inner_instructions
+    {
+        for group in inner_instructions {
+            inner_map.insert(group.index as usize, &group.instructions);
         }
     }
 
