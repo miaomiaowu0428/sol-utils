@@ -6,7 +6,10 @@ use solana_transaction_status_client_types::{
     EncodedTransactionWithStatusMeta, UiAddressTableLookup, UiCompiledInstruction, UiInstruction,
     UiMessage, UiRawMessage, UiTransaction, UiTransactionStatusMeta, UiTransactionTokenBalance,
 };
-use std::{collections::{HashMap, HashSet}, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+};
 
 use crate::{IndexedInstruction, get_or_fetch_alt};
 
@@ -251,7 +254,12 @@ pub fn diff_token_balances(
     let mut decimals_map: HashMap<(Pubkey, Pubkey), u8> = HashMap::new();
 
     for tb in pre_tokens {
-        let owner = tb.owner.as_ref().ok_or("token owner missing")?.parse::<Pubkey>().map_err(|e| e.to_string())?;
+        let owner = tb
+            .owner
+            .as_ref()
+            .ok_or("token owner missing")?
+            .parse::<Pubkey>()
+            .map_err(|e| e.to_string())?;
         let mint = tb.mint.parse::<Pubkey>().map_err(|e| e.to_string())?;
         let amount = tb.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
         pre_map.insert((owner, mint), amount);
@@ -260,7 +268,12 @@ pub fn diff_token_balances(
     }
 
     for tb in post_tokens {
-        let owner = tb.owner.as_ref().ok_or("token owner missing")?.parse::<Pubkey>().map_err(|e| e.to_string())?;
+        let owner = tb
+            .owner
+            .as_ref()
+            .ok_or("token owner missing")?
+            .parse::<Pubkey>()
+            .map_err(|e| e.to_string())?;
         let mint = tb.mint.parse::<Pubkey>().map_err(|e| e.to_string())?;
         let amount = tb.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
         post_map.insert((owner, mint), amount);
@@ -288,7 +301,6 @@ pub fn diff_token_balances(
     Ok(changes)
 }
 
-
 pub fn merge_balance_changes<I>(parts: I) -> Vec<BalanceChange>
 where
     I: IntoIterator<Item = Vec<BalanceChange>>,
@@ -307,4 +319,39 @@ pub fn collect_balance_changes(
     token: Vec<BalanceChange>,
 ) -> Vec<BalanceChange> {
     merge_balance_changes([sol, token])
+}
+
+pub trait GetAccounts {
+    fn accounts(&self) -> Vec<Pubkey>;
+}
+impl GetAccounts for EncodedConfirmedTransactionWithStatusMeta {
+    fn accounts(&self) -> Vec<Pubkey> {
+        let mut accounts = Vec::new();
+
+        let Some(meta) = &self.transaction.meta else {
+            return accounts;
+        };
+
+        let OptionSerializer::Some(loaded) = &meta.loaded_addresses else {
+            return accounts;
+        };
+
+        // writable
+        accounts.extend(
+            loaded
+                .writable
+                .iter()
+                .filter_map(|s| Pubkey::from_str(s).ok())
+        );
+
+        // readonly
+        accounts.extend(
+            loaded
+                .readonly
+                .iter()
+                .filter_map(|s| Pubkey::from_str(s).ok())
+        );
+
+        accounts
+    }
 }
