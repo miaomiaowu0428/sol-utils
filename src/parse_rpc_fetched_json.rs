@@ -320,38 +320,3 @@ pub fn collect_balance_changes(
 ) -> Vec<BalanceChange> {
     merge_balance_changes([sol, token])
 }
-
-pub trait GetAccounts {
-    fn accounts(&self) -> Vec<Pubkey>;
-}
-impl GetAccounts for EncodedConfirmedTransactionWithStatusMeta {
-    fn accounts(&self) -> Vec<Pubkey> {
-        let mut accounts = Vec::new();
-
-        let Some(meta) = &self.transaction.meta else {
-            return accounts;
-        };
-
-        let OptionSerializer::Some(loaded) = &meta.loaded_addresses else {
-            return accounts;
-        };
-
-        // writable
-        accounts.extend(
-            loaded
-                .writable
-                .iter()
-                .filter_map(|s| Pubkey::from_str(s).ok())
-        );
-
-        // readonly
-        accounts.extend(
-            loaded
-                .readonly
-                .iter()
-                .filter_map(|s| Pubkey::from_str(s).ok())
-        );
-
-        accounts
-    }
-}
