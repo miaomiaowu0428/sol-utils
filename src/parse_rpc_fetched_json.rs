@@ -144,7 +144,6 @@ impl BalanceChange {
         // 安全检查：确保是同一个 owner、mint、token_account 和相同的 decimal
         if self.owner != other.owner
             || self.mint != other.mint
-            || self.token_account != other.token_account
             || self.decimal != other.decimal
         {
             return None;
