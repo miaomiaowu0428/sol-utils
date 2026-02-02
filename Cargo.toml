@@ -14,14 +14,14 @@ grpc-client = { git = "https://github.com/miaomiaowu0428/grpc-client.git" }
 spl-associated-token-account = "8.0.0"
 anyhow = "1.0.100"
 tokio = "1.49.0"
-solana-client = "3.1.7"
+solana-client = "3.1.8"
 serde_json = "1.0.149"
 spl-token = { version = "9.0.0", features = ["no-entrypoint"] }
 spl-token-2022 = { version = "10.0.0", features = ["no-entrypoint"] }
 whirlwind = { git = "https://github.com/miaomiaowu0428/whirlwind.git" }
 async-trait = "0.1.89"
 solana-address-lookup-table-interface = "3.0.1"
-solana-transaction-status-client-types = "3.1.7"
+solana-transaction-status-client-types = "3.1.8"
 bs58 = "0.5.1"
 dotenvy = "0.15.7"
 futures = "0.3.31"
