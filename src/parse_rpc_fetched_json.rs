@@ -132,6 +132,7 @@ pub async fn parse_fetched_json(
 pub struct BalanceChange {
     pub owner: Pubkey,
     pub mint: Pubkey,
+    pub token_account: Pubkey,
     pub pre_balance: u64,
     pub after_balance: u64,
     pub change: i128,
@@ -140,13 +141,18 @@ pub struct BalanceChange {
 
 impl BalanceChange {
     pub fn combine(&self, other: &BalanceChange) -> Option<BalanceChange> {
-        // 安全检查：确保是同一个 owner 和相同的 decimal
-        if self.owner != other.owner || self.decimal != other.decimal {
+        // 安全检查：确保是同一个 owner、mint、token_account 和相同的 decimal
+        if self.owner != other.owner
+            || self.mint != other.mint
+            || self.token_account != other.token_account
+            || self.decimal != other.decimal
+        {
             return None;
         }
         Some(BalanceChange {
             owner: self.owner,
             mint: self.mint,
+            token_account: self.token_account,
             pre_balance: self.pre_balance + other.pre_balance,
             after_balance: self.after_balance + other.after_balance,
             change: self.change + other.change,
@@ -203,7 +209,8 @@ pub async fn balance_change_of(
     let token_changes = if let (OptionSerializer::Some(pre), OptionSerializer::Some(post)) =
         (&meta.pre_token_balances, &meta.post_token_balances)
     {
-        diff_token_balances(pre, post)?
+        // pass account keys so we can resolve token account pubkeys from account_index
+        diff_token_balances(pre, post, &account_keys)?
     } else {
         Vec::new()
     };
@@ -232,6 +239,7 @@ pub fn diff_sol_balances(input: SolBalanceInput) -> Vec<BalanceChange> {
         if pre != post {
             changes.push(BalanceChange {
                 owner: *owner,
+                token_account: Pubkey::default(),
                 mint: Pubkey::default(),
                 pre_balance: pre,
                 after_balance: post,
@@ -247,6 +255,7 @@ pub fn diff_sol_balances(input: SolBalanceInput) -> Vec<BalanceChange> {
 pub fn diff_token_balances(
     pre_tokens: &[UiTransactionTokenBalance],
     post_tokens: &[UiTransactionTokenBalance],
+    account_keys: &[Pubkey],
 ) -> Result<Vec<BalanceChange>, String> {
     let mut changes = Vec::new();
 
@@ -254,6 +263,7 @@ pub fn diff_token_balances(
     let mut pre_map: HashMap<(Pubkey, Pubkey), u64> = HashMap::new();
     let mut post_map: HashMap<(Pubkey, Pubkey), u64> = HashMap::new();
     let mut decimals_map: HashMap<(Pubkey, Pubkey), u8> = HashMap::new();
+    let mut token_account_map: HashMap<(Pubkey, Pubkey), Pubkey> = HashMap::new();
 
     for tb in pre_tokens {
         let owner = tb
@@ -264,8 +274,15 @@ pub fn diff_token_balances(
             .map_err(|e| e.to_string())?;
         let mint = tb.mint.parse::<Pubkey>().map_err(|e| e.to_string())?;
         let amount = tb.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
+        // resolve token account from account_index if available
+        let token_account = account_keys
+            .get(tb.account_index as usize)
+            .cloned()
+            .unwrap_or_default();
+
         pre_map.insert((owner, mint), amount);
         decimals_map.insert((owner, mint), tb.ui_token_amount.decimals);
+        token_account_map.insert((owner, mint), token_account);
         all_keys.insert((owner, mint));
     }
 
@@ -278,8 +295,14 @@ pub fn diff_token_balances(
             .map_err(|e| e.to_string())?;
         let mint = tb.mint.parse::<Pubkey>().map_err(|e| e.to_string())?;
         let amount = tb.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
+        let token_account = account_keys
+            .get(tb.account_index as usize)
+            .cloned()
+            .unwrap_or_default();
+
         post_map.insert((owner, mint), amount);
         decimals_map.insert((owner, mint), tb.ui_token_amount.decimals);
+        token_account_map.insert((owner, mint), token_account);
         all_keys.insert((owner, mint));
     }
 
@@ -287,11 +310,13 @@ pub fn diff_token_balances(
         let pre = *pre_map.get(&key).unwrap_or(&0);
         let post = *post_map.get(&key).unwrap_or(&0);
         let decimal = *decimals_map.get(&key).unwrap_or(&0);
+        let token_account = token_account_map.get(&key).cloned().unwrap_or_default();
 
         if pre != post {
             changes.push(BalanceChange {
                 owner: key.0,
                 mint: key.1,
+                token_account,
                 pre_balance: pre,
                 after_balance: post,
                 change: post as i128 - pre as i128,

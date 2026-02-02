@@ -4,9 +4,6 @@ use solana_sdk::pubkey::Pubkey;
 
 use crate::parse_rpc_fetched_json::BalanceChange;
 
-
-
-
 /// 从 TransactionFormat 提取余额变化
 /// 参考 utils::parse_rpc_fetched_json 的实现，但直接使用 TransactionFormat 的字段
 pub fn balance_changes_of_grpc(
@@ -32,6 +29,7 @@ pub fn balance_changes_of_grpc(
             sol_changes.push(BalanceChange {
                 owner: *owner,
                 mint: Pubkey::default(),
+                token_account: Pubkey::default(),
                 pre_balance: pre,
                 after_balance: post,
                 change: post as i128 - pre as i128,
@@ -51,13 +49,21 @@ pub fn balance_changes_of_grpc(
         let mut pre_map: HashMap<(Pubkey, Pubkey), u64> = HashMap::new();
         let mut post_map: HashMap<(Pubkey, Pubkey), u64> = HashMap::new();
         let mut decimals_map: HashMap<(Pubkey, Pubkey), u8> = HashMap::new();
+        let mut token_account_map: HashMap<(Pubkey, Pubkey), Pubkey> = HashMap::new();
 
         for tb in pre_tokens {
             let owner = tb.owner.parse::<Pubkey>()?;
             let mint = tb.mint.parse::<Pubkey>()?;
             let amount = tb.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
+            // try to resolve token account from account_index in TransactionFormat.account_keys
+            let token_account = account_keys
+                .get(tb.account_index as usize)
+                .cloned()
+                .unwrap_or_default();
+
             pre_map.insert((owner, mint), amount);
             decimals_map.insert((owner, mint), tb.ui_token_amount.decimals);
+            token_account_map.insert((owner, mint), token_account);
             all_keys.insert((owner, mint));
         }
 
@@ -65,8 +71,14 @@ pub fn balance_changes_of_grpc(
             let owner = tb.owner.parse::<Pubkey>()?;
             let mint = tb.mint.parse::<Pubkey>()?;
             let amount = tb.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
+            let token_account = account_keys
+                .get(tb.account_index as usize)
+                .cloned()
+                .unwrap_or_default();
+
             post_map.insert((owner, mint), amount);
             decimals_map.insert((owner, mint), tb.ui_token_amount.decimals);
+            token_account_map.insert((owner, mint), token_account);
             all_keys.insert((owner, mint));
         }
 
@@ -74,11 +86,13 @@ pub fn balance_changes_of_grpc(
             let pre = *pre_map.get(&key).unwrap_or(&0);
             let post = *post_map.get(&key).unwrap_or(&0);
             let decimal = *decimals_map.get(&key).unwrap_or(&0);
+            let token_account = token_account_map.get(&key).cloned().unwrap_or_default();
 
             if pre != post {
                 token_changes.push(BalanceChange {
                     owner: key.0,
                     mint: key.1,
+                    token_account,
                     pre_balance: pre,
                     after_balance: post,
                     change: post as i128 - pre as i128,
