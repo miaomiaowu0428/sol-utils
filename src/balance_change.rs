@@ -9,7 +9,7 @@ use crate::parse_rpc_fetched_json::BalanceChange;
 
 /// 从 TransactionFormat 提取余额变化
 /// 参考 utils::parse_rpc_fetched_json 的实现，但直接使用 TransactionFormat 的字段
-fn balance_changes_of_grpc(
+pub fn balance_changes_of_grpc(
     tx: &grpc_client::TransactionFormat,
 ) -> Result<Vec<BalanceChange>, anyhow::Error> {
     use std::collections::HashSet;
