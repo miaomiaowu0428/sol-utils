@@ -139,17 +139,19 @@ pub struct BalanceChange {
 }
 
 impl BalanceChange {
-    pub fn combine(&self, other: &BalanceChange) -> BalanceChange {
-        assert_eq!(self.owner, other.owner);
-        assert_eq!(self.decimal, other.decimal);
-        BalanceChange {
+    pub fn combine(&self, other: &BalanceChange) -> Option<BalanceChange> {
+        // 安全检查：确保是同一个 owner 和相同的 decimal
+        if self.owner != other.owner || self.decimal != other.decimal {
+            return None;
+        }
+        Some(BalanceChange {
             owner: self.owner,
             mint: self.mint,
             pre_balance: self.pre_balance + other.pre_balance,
             after_balance: self.after_balance + other.after_balance,
             change: self.change + other.change,
             decimal: self.decimal,
-        }
+        })
     }
 }
 
