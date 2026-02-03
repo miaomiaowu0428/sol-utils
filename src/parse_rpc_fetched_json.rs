@@ -1,6 +1,6 @@
 use bs58;
 use solana_client::rpc_response::OptionSerializer;
-use solana_sdk::pubkey::Pubkey;
+use solana_sdk::{pubkey, pubkey::Pubkey};
 use solana_transaction_status_client_types::{
     EncodedConfirmedTransactionWithStatusMeta, EncodedTransaction,
     EncodedTransactionWithStatusMeta, UiAddressTableLookup, UiCompiledInstruction, UiInstruction,
@@ -11,6 +11,7 @@ use std::{
     str::FromStr,
 };
 
+pub static WSOL: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 use crate::{IndexedInstruction, get_or_fetch_alt};
 
 pub async fn accounts_of(message: &UiRawMessage) -> Vec<Pubkey> {
@@ -142,10 +143,7 @@ pub struct BalanceChange {
 impl BalanceChange {
     pub fn combine(&self, other: &BalanceChange) -> Option<BalanceChange> {
         // 安全检查：确保是同一个 owner、mint、token_account 和相同的 decimal
-        if self.owner != other.owner
-            || self.mint != other.mint
-            || self.decimal != other.decimal
-        {
+        if self.combine_check_fail(other) {
             return None;
         }
         Some(BalanceChange {
@@ -158,8 +156,21 @@ impl BalanceChange {
             decimal: self.decimal,
         })
     }
-}
+    fn combine_check_fail(&self, other: &BalanceChange) -> bool {
+        // 1. 先定义「允许合并」的核心条件
+        let is_same_owner = self.owner == other.owner;
+        let is_same_decimal = self.decimal == other.decimal;
+        let is_valid_mint_pair = {
+            // mint相同 或 SOL(默认公钥)与WSOL互转
+            self.mint == other.mint
+                || (self.mint == Pubkey::default() && other.mint == WSOL)
+                || (self.mint == WSOL && other.mint == Pubkey::default())
+        };
 
+        // 2. 不满足「所有允许条件」则返回true（合并失败）
+        !(is_same_owner && is_same_decimal && is_valid_mint_pair)
+    }
+}
 pub async fn balance_change_of(
     tx: impl Into<EncodedConfirmedTransactionWithStatusMeta>,
 ) -> Result<Vec<BalanceChange>, String> {

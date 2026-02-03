@@ -43,12 +43,12 @@ use tokio::sync::RwLock;
 use whirlwind::ShardMap;
 
 pub mod async_utils;
+pub mod balance_change;
 pub mod macros;
 pub mod parse_rpc_fetched_json;
 pub mod pool_calculation;
 pub mod time;
 pub mod units;
-pub mod balance_change;
 
 pub trait SolToLamport {
     fn to_lamport(self) -> u64;
