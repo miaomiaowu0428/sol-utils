@@ -272,3 +272,31 @@ macro_rules! impl_enum_getters {
         }
     };
 }
+
+
+
+use std::sync::LazyLock;
+
+/// 通用 LazyLock 初始化宏（支持任意类型、任意可见性、任意初始化逻辑）
+/// 语法：
+/// lazy_lock! {
+///     [pub] static 变量名: 类型 = { 初始化逻辑 };
+/// }
+#[macro_export]
+macro_rules! lazy_lock {
+    // 匹配：pub static 变量名: 类型 = { 初始化逻辑 };
+    (pub static $name:ident: $ty:ty = { $($init:tt)* };) => {
+        pub static $name: LazyLock<$ty> = LazyLock::new(|| { $($init)* });
+    };
+    // 匹配：static 变量名: 类型 = { 初始化逻辑 };（私有）
+    (static $name:ident: $ty:ty = { $($init:tt)* };) => {
+        static $name: LazyLock<$ty> = LazyLock::new(|| { $($init)* });
+    };
+    // 简化版：初始化逻辑为单行时，可省略大括号（语法糖）
+    (pub static $name:ident: $ty:ty = $init:expr;) => {
+        pub static $name: LazyLock<$ty> = LazyLock::new(|| $init);
+    };
+    (static $name:ident: $ty:ty = $init:expr;) => {
+        static $name: LazyLock<$ty> = LazyLock::new(|| $init);
+    };
+}
