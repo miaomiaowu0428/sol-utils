@@ -478,7 +478,7 @@ pub fn decode_sk_file(path: &str) {
     println!("Decoded and wrote to {}: {} bytes", path, decoded.len());
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ParsedInstruction {
     pub program: solana_sdk::pubkey::Pubkey,
     pub accounts: Vec<solana_sdk::pubkey::Pubkey>,
@@ -486,7 +486,7 @@ pub struct ParsedInstruction {
     pub slot: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct IndexedInstruction {
     pub index: String, // 如 "1", "1.1"
     pub instruction: ParsedInstruction,
