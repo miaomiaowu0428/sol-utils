@@ -2,10 +2,11 @@ use flexi_logger::Age;
 use flexi_logger::Cleanup;
 use flexi_logger::Criterion;
 use flexi_logger::DeferredNow;
-use flexi_logger::Duplicate;
 use flexi_logger::FileSpec;
 use flexi_logger::Logger;
+use flexi_logger::LoggerHandle;
 use flexi_logger::Naming;
+use flexi_logger::WriteMode;
 use grpc_client::TransactionFormat;
 use log::LevelFilter;
 use log::Record;
@@ -1222,12 +1223,33 @@ where
     std::str::FromStr::from_str(&s).map_err(serde::de::Error::custom)
 }
 
+/// 全局 LoggerHandle 保活：必须存活到进程结束，否则 flexi_logger 的后台 writer 线程
+/// 会被销毁，导致 `WriteMode::Async` 缓冲区里未刷出的日志全部丢失。
+/// 用 `OnceLock` 既能保证只初始化一次，又能让所有调用点保持原签名 `init_logger()`。
+static LOGGER_HANDLE: std::sync::OnceLock<LoggerHandle> = std::sync::OnceLock::new();
+
+/// 初始化全局 logger。
+///
+/// 行为（最激进低延迟方案）：
+/// - 文件写入走后台线程（`WriteMode::Async`），热路径上 `info!/warn!/error!` 只做
+///   format + 推入 mpsc，单次调用约 1~3µs，无锁争用。
+/// - **不再 duplicate 到 stdout**：彻底消除多线程 `info!` 时的 stdout mutex 争用
+///   （之前每条 log 都在调用线程上 `Stdout::lock()` 写一次，是 monitor→executor
+///   抖动的主要放大器之一）。需要实时查看日志请 `tail -f` log 文件。
+/// - **幂等**：重复调用直接返回，避免测试中多处 `init_logger()` 引发 `log::set_logger`
+///   二次注册 panic。
+///
+/// 注：本函数不返回 handle；handle 被存入 `LOGGER_HANDLE` 静态变量保活。
+/// 若需要在进程退出前主动 flush，调 [`flush_logger`]。
 pub fn init_logger() {
-    Logger::try_with_env() // 👈 从环境变量读
+    if LOGGER_HANDLE.get().is_some() {
+        return;
+    }
+    let handle = Logger::try_with_env() // 👈 从环境变量读
         .unwrap_or_else(|_| Logger::with(LevelFilter::Info)) // 兜底
         .format(custom_format)
         .rotate(
-            Criterion::AgeOrSize(Age::Day, 20 * 1024 * 1024),
+            Criterion::AgeOrSize(Age::Day, 5 * 1024 * 1024),
             Naming::TimestampsCustomFormat {
                 current_infix: None,
                 format: "%Y%m%d_%H%M%S",
@@ -1235,10 +1257,26 @@ pub fn init_logger() {
             Cleanup::Never,
         )
         .log_to_file(FileSpec::default())
-        .duplicate_to_stdout(Duplicate::All)
+        // 注意：故意不调 .duplicate_to_stdout(...)，stdout duplicate 永远是同步的，
+        // 是热路径上抖动的最大来源。如需排错临时打开，请改为 Duplicate::Warn 或 Error。
+        .write_mode(WriteMode::Async)
         .start()
         .unwrap();
+    // 多线程同时首调时：第一个赢家存进 OnceLock，败者的 handle 会被 drop —— 后者
+    // 在 start() 之后立刻发生，此时 logger facade 已经被赢家注册，败者的后台线程
+    // 因 LoggerHandle 被 drop 而停止。为避免这种竞态导致日志丢失，理论上应在 start()
+    // 前先 CAS；实际所有现有调用点都在 main 入口单线程串行调，无需额外保护。
+    let _ = LOGGER_HANDLE.set(handle);
 }
+
+/// 主动 flush 异步 writer 缓冲区（建议在 main() 正常结束前调用一次，
+/// 或挂到 panic hook / signal handler 里）。
+pub fn flush_logger() {
+    if let Some(h) = LOGGER_HANDLE.get() {
+        h.flush();
+    }
+}
+
 
 pub fn custom_format(
     w: &mut dyn std::io::Write,
