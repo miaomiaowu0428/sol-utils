@@ -104,6 +104,59 @@ impl SolToLamport for i32 {
 }
 
 /// USD1单位转换：1 USD1 = 1_000_000 单位
+
+pub trait SolToMicroLamport {
+    fn to_micro_lamport(self) -> u64;
+}
+
+impl SolToMicroLamport for f64 {
+    fn to_micro_lamport(self) -> u64 {
+        (self * 1_000_000_000_000_000.0) as u64
+    }
+}
+
+impl SolToMicroLamport for f32 {
+    fn to_micro_lamport(self) -> u64 {
+        (self * 1_000_000_000_000_000.0) as u64
+    }
+}
+
+impl SolToMicroLamport for u64 {
+    fn to_micro_lamport(self) -> u64 {
+        self.saturating_mul(1_000_000_000_000_000)
+    }
+}
+
+impl SolToMicroLamport for u32 {
+    fn to_micro_lamport(self) -> u64 {
+        (self as u64).saturating_mul(1_000_000_000_000_000)
+    }
+}
+
+impl SolToMicroLamport for u16 {
+    fn to_micro_lamport(self) -> u64 {
+        (self as u64).saturating_mul(1_000_000_000_000_000)
+    }
+}
+
+impl SolToMicroLamport for u8 {
+    fn to_micro_lamport(self) -> u64 {
+        (self as u64).saturating_mul(1_000_000_000_000_000)
+    }
+}
+
+impl SolToMicroLamport for i64 {
+    fn to_micro_lamport(self) -> u64 {
+        (self as u64).saturating_mul(1_000_000_000_000_000)
+    }
+}
+
+impl SolToMicroLamport for i32 {
+    fn to_micro_lamport(self) -> u64 {
+        (self as u64).saturating_mul(1_000_000_000_000_000)
+    }
+}
+
 pub trait Usd1ToUsd1Unit {
     fn to_usd1_unit(self) -> u64;
 }
@@ -1276,7 +1329,6 @@ pub fn flush_logger() {
         h.flush();
     }
 }
-
 
 pub fn custom_format(
     w: &mut dyn std::io::Write,
