@@ -9,7 +9,7 @@ use crate::parse_rpc_fetched_json::BalanceChange;
 pub fn balance_changes_of_grpc(
     tx: &grpc_client::TransactionFormat,
 ) -> Result<Vec<BalanceChange>, anyhow::Error> {
-    use std::collections::HashSet;
+    use ahash::AHashSet as HashSet;
 
     let Some(meta) = &tx.meta else {
         return Err(anyhow::anyhow!("meta not found"));
