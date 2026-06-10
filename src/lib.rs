@@ -55,6 +55,12 @@ pub trait SolToLamport {
     fn to_lamport(self) -> u64;
 }
 
+/// const fn 直接转换（不经过 trait，可用于 const 上下文）
+#[inline]
+pub const fn lamports(sol: u64) -> u64 {
+    sol * 1_000_000_000
+}
+
 impl SolToLamport for f64 {
     fn to_lamport(self) -> u64 {
         (self * 1_000_000_000.0) as u64
@@ -63,7 +69,7 @@ impl SolToLamport for f64 {
 
 impl SolToLamport for f32 {
     fn to_lamport(self) -> u64 {
-        (self * 1_000_000_000.0) as u64
+        (self as f64 * 1_000_000_000.0) as u64
     }
 }
 
