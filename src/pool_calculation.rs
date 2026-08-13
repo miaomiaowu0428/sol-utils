@@ -117,8 +117,7 @@ impl PoolPriceInfo {
     pub fn after_sell_base_exact_in(&self, base_in: u64, fee: f64) -> Self {
         // 1. 计算毛输出 (Quote_Gross) - 用于更新储备
         let base_in_f = base_in as f64;
-        let quote_out_gross =
-            (base_in_f * self.quote_reserve as f64) / (self.base_reserve as f64 + base_in_f);
+        let quote_out_gross = (base_in_f * self.quote_reserve as f64) / (self.base_reserve as f64 + base_in_f);
 
         let new_base_reserve = self.base_reserve.saturating_add(base_in);
         // 修正：使用毛输出更新储备
@@ -204,9 +203,6 @@ mod test {
 
         println!("Pool 80: {:#?}\n", pool_80);
         println!("Pool 80_2: {:#?}\n", pool_80_2);
-        println!(
-            "Pool 80 == Pool 80_2: {}",
-            if pool_80 == pool_80_2 { "yes" } else { "no" }
-        );
+        println!("Pool 80 == Pool 80_2: {}", if pool_80 == pool_80_2 { "yes" } else { "no" });
     }
 }

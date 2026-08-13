@@ -2,9 +2,9 @@ use bs58;
 use solana_client::rpc_response::OptionSerializer;
 use solana_sdk::{pubkey, pubkey::Pubkey};
 use solana_transaction_status_client_types::{
-    EncodedConfirmedTransactionWithStatusMeta, EncodedTransaction,
-    EncodedTransactionWithStatusMeta, UiAddressTableLookup, UiCompiledInstruction, UiInstruction,
-    UiMessage, UiRawMessage, UiTransaction, UiTransactionStatusMeta, UiTransactionTokenBalance,
+    EncodedConfirmedTransactionWithStatusMeta, EncodedTransaction, EncodedTransactionWithStatusMeta, UiAddressTableLookup,
+    UiCompiledInstruction, UiInstruction, UiMessage, UiRawMessage, UiTransaction, UiTransactionStatusMeta,
+    UiTransactionTokenBalance,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -30,8 +30,7 @@ pub async fn accounts_of(message: &UiRawMessage) -> Vec<Pubkey> {
             readonly_indexes,
         } in address_table_lookups
         {
-            let Ok(alt_onchain) = get_or_fetch_alt(Pubkey::from_str(&account_key).unwrap()).await
-            else {
+            let Ok(alt_onchain) = get_or_fetch_alt(Pubkey::from_str(&account_key).unwrap()).await else {
                 for _ in readonly_indexes {
                     alt_realonly.push(Pubkey::default())
                 }
@@ -53,9 +52,7 @@ pub async fn accounts_of(message: &UiRawMessage) -> Vec<Pubkey> {
     account_keys
 }
 
-pub async fn parse_fetched_json(
-    tx: impl Into<EncodedConfirmedTransactionWithStatusMeta>,
-) -> Vec<IndexedInstruction> {
+pub async fn parse_fetched_json(tx: impl Into<EncodedConfirmedTransactionWithStatusMeta>) -> Vec<IndexedInstruction> {
     let EncodedConfirmedTransactionWithStatusMeta {
         slot,
         transaction,
@@ -63,9 +60,7 @@ pub async fn parse_fetched_json(
     } = tx.into();
 
     // println!("{transaction:#?}");
-    let EncodedTransactionWithStatusMeta {
-        transaction, meta, ..
-    } = transaction;
+    let EncodedTransactionWithStatusMeta { transaction, meta, .. } = transaction;
     let EncodedTransaction::Json(UiTransaction { message, .. }) = transaction else {
         return vec![];
     };
@@ -76,10 +71,7 @@ pub async fn parse_fetched_json(
     let Some(OptionSerializer::Some(inner_ixs)) = meta.map(|meta| meta.inner_instructions) else {
         return vec![];
     };
-    let inner_ixs: HashMap<_, _> = inner_ixs
-        .into_iter()
-        .map(|item| (item.index, item.instructions))
-        .collect();
+    let inner_ixs: HashMap<_, _> = inner_ixs.into_iter().map(|item| (item.index, item.instructions)).collect();
 
     let mut account_keys: Vec<_> = accounts_of(&message).await;
 
@@ -89,11 +81,7 @@ pub async fn parse_fetched_json(
             index: index.to_string(),
             instruction: crate::ParsedInstruction {
                 program: account_keys[ix.program_id_index as usize],
-                accounts: ix
-                    .accounts
-                    .iter()
-                    .map(|index| account_keys[*index as usize])
-                    .collect(),
+                accounts: ix.accounts.iter().map(|index| account_keys[*index as usize]).collect(),
                 data: bs58::decode(ix.data).into_vec().unwrap(),
                 slot,
             },
@@ -114,10 +102,7 @@ pub async fn parse_fetched_json(
                     index: format!("{index}.{inner_index}"),
                     instruction: crate::ParsedInstruction {
                         program: account_keys[*program_id_index as usize],
-                        accounts: accounts
-                            .iter()
-                            .map(|index| account_keys[*index as usize])
-                            .collect(),
+                        accounts: accounts.iter().map(|index| account_keys[*index as usize]).collect(),
                         data: bs58::decode(data).into_vec().unwrap(),
                         slot,
                     },
@@ -171,9 +156,7 @@ impl BalanceChange {
         !(is_same_owner && is_same_decimal && is_valid_mint_pair)
     }
 }
-pub async fn balance_change_of(
-    tx: impl Into<EncodedConfirmedTransactionWithStatusMeta>,
-) -> Result<Vec<BalanceChange>, String> {
+pub async fn balance_change_of(tx: impl Into<EncodedConfirmedTransactionWithStatusMeta>) -> Result<Vec<BalanceChange>, String> {
     let EncodedConfirmedTransactionWithStatusMeta {
         slot,
         transaction,
@@ -285,10 +268,7 @@ pub fn diff_token_balances(
         let mint = tb.mint.parse::<Pubkey>().map_err(|e| e.to_string())?;
         let amount = tb.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
         // resolve token account from account_index if available
-        let token_account = account_keys
-            .get(tb.account_index as usize)
-            .cloned()
-            .unwrap_or_default();
+        let token_account = account_keys.get(tb.account_index as usize).cloned().unwrap_or_default();
 
         pre_map.insert((owner, mint), amount);
         decimals_map.insert((owner, mint), tb.ui_token_amount.decimals);
@@ -305,10 +285,7 @@ pub fn diff_token_balances(
             .map_err(|e| e.to_string())?;
         let mint = tb.mint.parse::<Pubkey>().map_err(|e| e.to_string())?;
         let amount = tb.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
-        let token_account = account_keys
-            .get(tb.account_index as usize)
-            .cloned()
-            .unwrap_or_default();
+        let token_account = account_keys.get(tb.account_index as usize).cloned().unwrap_or_default();
 
         post_map.insert((owner, mint), amount);
         decimals_map.insert((owner, mint), tb.ui_token_amount.decimals);
@@ -351,9 +328,6 @@ where
     result
 }
 
-pub fn collect_balance_changes(
-    sol: Vec<BalanceChange>,
-    token: Vec<BalanceChange>,
-) -> Vec<BalanceChange> {
+pub fn collect_balance_changes(sol: Vec<BalanceChange>, token: Vec<BalanceChange>) -> Vec<BalanceChange> {
     merge_balance_changes([sol, token])
 }

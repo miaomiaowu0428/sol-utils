@@ -329,13 +329,10 @@ impl SmallDecimalFormat for f32 {
 }
 
 /// 全局缓存的 blockhash 及其获取时间
-static BLOCKHASH_CACHE: LazyLock<RwLock<Option<(Hash, Instant)>>> =
-    LazyLock::new(|| RwLock::new(None));
+static BLOCKHASH_CACHE: LazyLock<RwLock<Option<(Hash, Instant)>>> = LazyLock::new(|| RwLock::new(None));
 
 /// 获取（并自动缓存）最新 blockhash，30秒内重复调用直接返回缓存，失败自动重试3次
-pub async fn get_cached_blockhash(
-    json_rpc_client: &solana_client::nonblocking::rpc_client::RpcClient,
-) -> Option<Hash> {
+pub async fn get_cached_blockhash(json_rpc_client: &solana_client::nonblocking::rpc_client::RpcClient) -> Option<Hash> {
     {
         let cache = BLOCKHASH_CACHE.read().await;
         if let Some((hash, ts)) = &*cache {
@@ -362,19 +359,48 @@ pub async fn get_cached_blockhash(
     None
 }
 
+/// 后台 blockhash 缓存刷新间隔（秒）。
+pub const BLOCKHASH_REFRESH_INTERVAL_SECS: u64 = 30;
+
+/// 启动后台 blockhash 缓存刷新任务。
+///
+/// 每 `BLOCKHASH_REFRESH_INTERVAL_SECS`（默认 30s）主动调用 [`get_cached_blockhash`]
+/// 更新全局缓存，让 [`get_cached_blockhash`] 的调用方几乎总是命中内存缓存、
+/// 无需在发送路径上现场等待 RPC。首次会立即刷新一次。
+///
+/// 在项目入口 spawn 一次即可全局生效（缓存是进程级全局的）。
+/// 返回 `JoinHandle`，进程退出时可按需 join（fire-and-forget 忽略亦可）。
+///
+/// # 示例
+/// ```ignore
+/// // 项目 entry 里：
+/// utils::spawn_blockhash_refresher(Arc::clone(&*JSON_RPC_CLIENT));
+/// ```
+pub fn spawn_blockhash_refresher(
+    json_rpc_client: Arc<solana_client::nonblocking::rpc_client::RpcClient>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        // 首次立即刷新，保证缓存有值
+        get_cached_blockhash(&json_rpc_client).await;
+        // 之后每 30s 主动刷新；interval 首 tick 立即触发，先消费掉避免与首次重复
+        let mut ticker = tokio::time::interval(Duration::from_secs(BLOCKHASH_REFRESH_INTERVAL_SECS));
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            get_cached_blockhash(&json_rpc_client).await;
+        }
+    })
+}
+
 /// 获取指定 ATA 地址的 token 余额，如果账户不存在返回 None
-pub async fn get_ata_balance(
-    ata: &Pubkey,
-    json_rpc_client: &solana_client::nonblocking::rpc_client::RpcClient,
-) -> Option<u64> {
+pub async fn get_ata_balance(ata: &Pubkey, json_rpc_client: &solana_client::nonblocking::rpc_client::RpcClient) -> Option<u64> {
     let res = json_rpc_client.get_token_account_balance(ata);
     match res.await {
         Ok(balance) => Some(balance.amount.parse::<u64>().unwrap_or(0)),
         Err(e) => {
             // 如果是账户不存在，返回 None，否则可根据需要打印日志
-            if let solana_client::client_error::ClientErrorKind::RpcError(
-                solana_client::rpc_request::RpcError::ForUser(msg),
-            ) = &*e.kind
+            if let solana_client::client_error::ClientErrorKind::RpcError(solana_client::rpc_request::RpcError::ForUser(msg)) =
+                &*e.kind
             {
                 if msg.contains("could not find account") || msg.contains("AccountNotFound") {
                     return None;
@@ -398,9 +424,8 @@ pub async fn get_ata_balance_with_decimal(
         }
         Err(e) => {
             // 如果是账户不存在，返回 None，否则可根据需要打印日志
-            if let solana_client::client_error::ClientErrorKind::RpcError(
-                solana_client::rpc_request::RpcError::ForUser(msg),
-            ) = &*e.kind
+            if let solana_client::client_error::ClientErrorKind::RpcError(solana_client::rpc_request::RpcError::ForUser(msg)) =
+                &*e.kind
             {
                 if msg.contains("could not find account") || msg.contains("AccountNotFound") {
                     return None;
@@ -444,17 +469,11 @@ pub async fn poll_transaction_confirmation(
             Ok(None) => {
                 // 交易未找到，可能还在传播
                 if attempt % 10 == 0 {
-                    info!(
-                        "🔍 Transaction {} not found yet (attempt {})",
-                        signature, attempt
-                    );
+                    info!("🔍 Transaction {} not found yet (attempt {})", signature, attempt);
                 }
             }
             Err(e) => {
-                warn!(
-                    "⚠️ Error checking transaction status: {} (attempt {})",
-                    e, attempt
-                );
+                warn!("⚠️ Error checking transaction status: {} (attempt {})", e, attempt);
             }
         }
 
@@ -527,10 +546,7 @@ fn decode_sk() {
 pub fn decode_sk_file(path: &str) {
     use std::fs;
     use std::io::Write;
-    let s = fs::read_to_string(path)
-        .expect("read file")
-        .trim()
-        .to_string();
+    let s = fs::read_to_string(path).expect("read file").trim().to_string();
     let decoded = bs58::decode(s).into_vec().expect("base58 decode");
     let json = serde_json::to_string(&decoded).expect("to json");
     let mut file = fs::File::create(path).expect("create file");
@@ -581,10 +597,7 @@ pub fn flatten_instructions(tx: &TransactionFormat) -> Vec<IndexedInstruction> {
     }
 
     let parse_ix = |ix: &CompiledInstruction| {
-        let program = account_keys
-            .get(ix.program_id_index as usize)
-            .cloned()
-            .unwrap_or_default();
+        let program = account_keys.get(ix.program_id_index as usize).cloned().unwrap_or_default();
         let accounts = ix
             .accounts
             .iter()
@@ -745,18 +758,13 @@ impl<'de> Deserialize<'de> for PoolPriceInfo {
                     }
                 }
                 Ok(PoolPriceInfo {
-                    pool_address: pool_address
-                        .ok_or_else(|| de::Error::missing_field("pool_address"))?,
+                    pool_address: pool_address.ok_or_else(|| de::Error::missing_field("pool_address"))?,
                     base_mint: base_mint.ok_or_else(|| de::Error::missing_field("base_mint"))?,
                     quote_mint: quote_mint.ok_or_else(|| de::Error::missing_field("quote_mint"))?,
-                    base_reserve: base_reserve
-                        .ok_or_else(|| de::Error::missing_field("base_reserve"))?,
-                    quote_reserve: quote_reserve
-                        .ok_or_else(|| de::Error::missing_field("quote_reserve"))?,
-                    base_price_in_quote: base_price_in_quote
-                        .ok_or_else(|| de::Error::missing_field("base_price_in_quote"))?,
-                    last_updated: last_updated
-                        .ok_or_else(|| de::Error::missing_field("last_updated"))?,
+                    base_reserve: base_reserve.ok_or_else(|| de::Error::missing_field("base_reserve"))?,
+                    quote_reserve: quote_reserve.ok_or_else(|| de::Error::missing_field("quote_reserve"))?,
+                    base_price_in_quote: base_price_in_quote.ok_or_else(|| de::Error::missing_field("base_price_in_quote"))?,
+                    last_updated: last_updated.ok_or_else(|| de::Error::missing_field("last_updated"))?,
                 })
             }
         }
@@ -781,8 +789,7 @@ impl PoolPriceInfo {
     pub fn simulate_buy_quote(&self, quote_in: u64, fee: f64) -> PoolPriceInfo {
         let quote_in_after_fee = quote_in as f64 * (1.0 - fee);
         let new_quote_reserve = self.quote_reserve as f64 + quote_in_after_fee;
-        let base_out = (quote_in_after_fee * self.base_reserve as f64)
-            / (self.quote_reserve as f64 + quote_in_after_fee);
+        let base_out = (quote_in_after_fee * self.base_reserve as f64) / (self.quote_reserve as f64 + quote_in_after_fee);
         let new_base_reserve = self.base_reserve as f64 - base_out;
         let new_base_price_in_quote = new_quote_reserve / new_base_reserve;
         PoolPriceInfo {
@@ -800,8 +807,7 @@ impl PoolPriceInfo {
     pub fn simulate_sell_base(&self, base_in: u64, fee: f64) -> PoolPriceInfo {
         let base_in_f = base_in as f64;
         let new_base_reserve = self.base_reserve as f64 + base_in_f;
-        let quote_out =
-            (base_in_f * self.quote_reserve as f64) / (self.base_reserve as f64 + base_in_f);
+        let quote_out = (base_in_f * self.quote_reserve as f64) / (self.base_reserve as f64 + base_in_f);
         let quote_out_after_fee = quote_out * (1.0 - fee);
         let new_quote_reserve = self.quote_reserve as f64 - quote_out_after_fee;
         let new_base_price_in_quote = new_quote_reserve / new_base_reserve;
@@ -881,14 +887,10 @@ impl MintDecimal for Pubkey {
 
 pub static JSON_RPC_CLIENT: LazyLock<Arc<RpcClient>> = LazyLock::new(|| {
     let url = env::var("JSON_RPC_URL").expect("JSON_RPC_URL not set");
-    Arc::new(RpcClient::new_with_commitment(
-        url,
-        CommitmentConfig::processed(),
-    ))
+    Arc::new(RpcClient::new_with_commitment(url, CommitmentConfig::processed()))
 });
 
-pub static ALTS: LazyLock<ShardMap<Pubkey, Vec<Pubkey>>> =
-    LazyLock::new(|| ShardMap::with_shards(16));
+pub static ALTS: LazyLock<ShardMap<Pubkey, Vec<Pubkey>>> = LazyLock::new(|| ShardMap::with_shards(16));
 
 #[async_trait::async_trait]
 pub trait FetchAlt {
@@ -924,17 +926,10 @@ async fn get_or_fetch_alt(alt_address: Pubkey) -> Result<Vec<Pubkey>, ()> {
     }
 }
 
-pub async fn flatten_main_instructions(
-    tx: &VersionedTransaction,
-    slot: u64,
-) -> Result<Vec<IndexedInstruction>, ()> {
+pub async fn flatten_main_instructions(tx: &VersionedTransaction, slot: u64) -> Result<Vec<IndexedInstruction>, ()> {
     match &tx.message {
-        solana_sdk::message::VersionedMessage::Legacy(message) => {
-            Ok(flatten_main_ix_from_legasy_msg(message, slot))
-        }
-        solana_sdk::message::VersionedMessage::V0(message) => {
-            Ok(flatten_main_ix_from_v0_msg(message, slot).await)
-        }
+        solana_sdk::message::VersionedMessage::Legacy(message) => Ok(flatten_main_ix_from_legasy_msg(message, slot)),
+        solana_sdk::message::VersionedMessage::V0(message) => Ok(flatten_main_ix_from_v0_msg(message, slot).await),
     }
 }
 
@@ -1014,11 +1009,7 @@ pub fn flatten_main_ix_from_legasy_msg(
     ixs.iter()
         .enumerate()
         .map(|(index, ix)| {
-            let ix_accounts = ix
-                .accounts
-                .iter()
-                .map(|index| accounts[*index as usize])
-                .collect();
+            let ix_accounts = ix.accounts.iter().map(|index| accounts[*index as usize]).collect();
             IndexedInstruction {
                 index: index.to_string(),
                 instruction: ParsedInstruction {
@@ -1084,34 +1075,20 @@ impl TokenBalanceChange {
         for tb in pre_token_balances {
             let mint = Pubkey::from_str(&tb.mint).unwrap_or_default();
             let owner = Pubkey::from_str(&tb.owner).unwrap_or_default();
-            let token_account = tx
-                .account_keys
-                .get(tb.account_index as usize)
-                .cloned()
-                .unwrap_or_default();
+            let token_account = tx.account_keys.get(tb.account_index as usize).cloned().unwrap_or_default();
             let amt = tb.ui_token_amount.amount.parse().unwrap_or(0u64);
-            pre_map.insert(
-                token_account,
-                (mint, owner, tb.ui_token_amount.decimals, amt),
-            );
+            pre_map.insert(token_account, (mint, owner, tb.ui_token_amount.decimals, amt));
         }
 
         let mut changes = Vec::new();
         for tb in post_token_balances {
             let mint = Pubkey::from_str(&tb.mint).unwrap_or_default();
             let owner = Pubkey::from_str(&tb.owner).unwrap_or_default();
-            let token_account = tx
-                .account_keys
-                .get(tb.account_index as usize)
-                .cloned()
-                .unwrap_or_default();
+            let token_account = tx.account_keys.get(tb.account_index as usize).cloned().unwrap_or_default();
             let post_amt = tb.ui_token_amount.amount.parse().unwrap_or(0u64);
 
             // 查找对应的 pre 余额
-            let pre_amt = pre_map
-                .get(&token_account)
-                .map(|(_, _, _, amt)| *amt)
-                .unwrap_or(0u64);
+            let pre_amt = pre_map.get(&token_account).map(|(_, _, _, amt)| *amt).unwrap_or(0u64);
 
             let delta = post_amt as i128 - pre_amt as i128;
             if delta != 0 {
@@ -1336,11 +1313,7 @@ pub fn flush_logger() {
     }
 }
 
-pub fn custom_format(
-    w: &mut dyn std::io::Write,
-    now: &mut DeferredNow,
-    record: &Record,
-) -> std::io::Result<()> {
+pub fn custom_format(w: &mut dyn std::io::Write, now: &mut DeferredNow, record: &Record) -> std::io::Result<()> {
     write!(
         w,
         "[{}] {} [{}] {}:{} - {}",

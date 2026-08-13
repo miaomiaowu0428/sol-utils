@@ -8,10 +8,8 @@ use utils::{JSON_RPC_CLIENT, parse_rpc_fetched_json::parse_fetched_json};
 #[tokio::main]
 async fn main() {
     dotenv().ok();
-    let sig = Signature::from_str(
-        "3xrvumh3qqi9bibCdtB6HSubbyEw7BcRJ36qqksaRWY2G2rZtKnfZbzjmBg8LBDWS9TvKPsQi4LbkH5FKcgjoQuK",
-    )
-    .unwrap();
+    let sig =
+        Signature::from_str("3xrvumh3qqi9bibCdtB6HSubbyEw7BcRJ36qqksaRWY2G2rZtKnfZbzjmBg8LBDWS9TvKPsQi4LbkH5FKcgjoQuK").unwrap();
     println!("fetching tx: {}", sig.to_string());
 
     let tx_input = JSON_RPC_CLIENT

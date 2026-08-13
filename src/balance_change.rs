@@ -6,9 +6,7 @@ use crate::parse_rpc_fetched_json::BalanceChange;
 
 /// 从 TransactionFormat 提取余额变化
 /// 参考 utils::parse_rpc_fetched_json 的实现，但直接使用 TransactionFormat 的字段
-pub fn balance_changes_of_grpc(
-    tx: &grpc_client::TransactionFormat,
-) -> Result<Vec<BalanceChange>, anyhow::Error> {
+pub fn balance_changes_of_grpc(tx: &grpc_client::TransactionFormat) -> Result<Vec<BalanceChange>, anyhow::Error> {
     use ahash::AHashSet as HashSet;
 
     let Some(meta) = &tx.meta else {
@@ -42,9 +40,7 @@ pub fn balance_changes_of_grpc(
     // 2 Token balance diff
     // ===============================
     let mut token_changes = Vec::new();
-    if let (Some(pre_tokens), Some(post_tokens)) =
-        (&meta.pre_token_balances, &meta.post_token_balances)
-    {
+    if let (Some(pre_tokens), Some(post_tokens)) = (&meta.pre_token_balances, &meta.post_token_balances) {
         let mut all_keys = HashSet::new();
         let mut pre_map: HashMap<(Pubkey, Pubkey), u64> = HashMap::new();
         let mut post_map: HashMap<(Pubkey, Pubkey), u64> = HashMap::new();
@@ -56,10 +52,7 @@ pub fn balance_changes_of_grpc(
             let mint = tb.mint.parse::<Pubkey>()?;
             let amount = tb.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
             // try to resolve token account from account_index in TransactionFormat.account_keys
-            let token_account = account_keys
-                .get(tb.account_index as usize)
-                .cloned()
-                .unwrap_or_default();
+            let token_account = account_keys.get(tb.account_index as usize).cloned().unwrap_or_default();
 
             pre_map.insert((owner, mint), amount);
             decimals_map.insert((owner, mint), tb.ui_token_amount.decimals);
@@ -71,10 +64,7 @@ pub fn balance_changes_of_grpc(
             let owner = tb.owner.parse::<Pubkey>()?;
             let mint = tb.mint.parse::<Pubkey>()?;
             let amount = tb.ui_token_amount.amount.parse::<u64>().unwrap_or(0);
-            let token_account = account_keys
-                .get(tb.account_index as usize)
-                .cloned()
-                .unwrap_or_default();
+            let token_account = account_keys.get(tb.account_index as usize).cloned().unwrap_or_default();
 
             post_map.insert((owner, mint), amount);
             decimals_map.insert((owner, mint), tb.ui_token_amount.decimals);
