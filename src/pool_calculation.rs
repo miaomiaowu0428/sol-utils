@@ -1,8 +1,46 @@
 #![allow(unused)]
 
-use crate::PoolPriceInfo;
+use solana_sdk::pubkey::Pubkey;
+
+use crate::parse_rpc_fetched_json::WSOL;
+use crate::{PoolPriceInfo, PoolTimeStr};
 
 impl PoolPriceInfo {
+    /// 从 Pump 虚拟储备构造池状态。
+    ///
+    /// `base_reserve` = `virtual_token_reserves`，`quote_reserve` =
+    /// `virtual_quote_reserves`（WSOL=lamports / USDC=uUnit，均最小单位），
+    /// `base_price_in_quote` = quote/base（**raw 最小单位比**），与
+    /// `DqSnipeBuy` 的 buy_price、conditions、`pump_math::pool_after_buys`
+    /// 完全同口径 —— DQ 策略链统一用它，不各算各的数值。
+    pub fn from_virtual_reserves(
+        mint: Pubkey,
+        quote_mint: Pubkey,
+        virtual_quote_reserves: u64,
+        virtual_token_reserves: u64,
+    ) -> PoolPriceInfo {
+        let mut info = PoolPriceInfo {
+            pool_address: Pubkey::default(),
+            base_mint: mint,
+            quote_mint,
+            base_reserve: virtual_token_reserves,
+            quote_reserve: virtual_quote_reserves,
+            base_price_in_quote: 0.0,
+            last_updated: PoolTimeStr::now_utc(),
+        };
+        info.update_price();
+        info
+    }
+
+    /// quote 储备折算为「SOL 或 USDC」绝对量（WSOL→/1e9，USDC→/1e6）。
+    /// 与 `DqOpenSnapshot.entry_pool_sol` 同口径，算 pool_gain 用。
+    pub fn quote_in_display(&self) -> f64 {
+        if self.quote_mint == WSOL {
+            self.quote_reserve as f64 / 1e9
+        } else {
+            self.quote_reserve as f64 / 1e6
+        }
+    }
     // =======================================================
     // --- 交易输出计算 (Exact In) ---
     // =======================================================
