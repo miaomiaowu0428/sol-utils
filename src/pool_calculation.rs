@@ -43,11 +43,11 @@ impl PoolPriceInfo {
     }
 
     /// 折算后价格（人类可读）：1 base token = 多少 SOL/USDC。
-    /// `base_price_in_quote`（raw 最小单位比）× base_dec/quote_dec
+    /// 基于 [`Self::price`]（raw 比）× base_dec/quote_dec
     /// （WSOL：×1e6/1e9；USDC：×1e6/1e6=1）。
     pub fn price_in_display(&self) -> f64 {
         let quote_dec = if self.quote_mint == WSOL { 1e9 } else { 1e6 };
-        self.base_price_in_quote * 1e6 / quote_dec
+        self.price() * 1e6 / quote_dec
     }
     // =======================================================
     // --- 交易输出计算 (Exact In) ---

@@ -641,10 +641,20 @@ pub struct PoolPriceInfo {
     pub quote_mint: Pubkey,        // quote币种mint
     pub base_reserve: u64,         // base币种池子余额
     pub quote_reserve: u64,        // quote币种池子余额
-    pub base_price_in_quote: f64,  // 1个base币等于多少quote币
+    /// 缓存价（raw 比：1 base 最小单位 = 多少 quote 最小单位）。
+    /// 兼容旧代码与序列化保留；**新代码请用 [`PoolPriceInfo::price`]**，它实时从储备
+    /// 现算，不会因忘记 `update_price` / 外部改过储备而读到 0 或 stale。
+    pub base_price_in_quote: f64,
     pub last_updated: PoolTimeStr, // UTC、无年份、精确到0.xx秒
 }
 impl PoolPriceInfo {
+    /// 实时计算当前价格：1 base 最小单位 = 多少 quote 最小单位（raw 比）。
+    ///
+    /// 直接从储备现算，不依赖 `base_price_in_quote` 缓存字段——因此无论是否调用过
+    /// `update_price`、是否外部改过储备，都返回一致的正确价格。**新代码统一用它**。
+    pub fn price(&self) -> f64 {
+        self.quote_reserve as f64 / self.base_reserve as f64
+    }
     pub fn update_price(&mut self) {
         self.base_price_in_quote = self.quote_reserve as f64 / self.base_reserve as f64
     }
