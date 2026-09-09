@@ -631,7 +631,78 @@ pub fn flatten_instructions(tx: &TransactionFormat) -> Vec<IndexedInstruction> {
         }
     }
 
+    // 追加：从 logMessages 的 "Program data:" 行重建出的事件（视为假 CPI 指令）。
+    if let Some(meta) = &tx.meta
+        && let Some(logs) = &meta.log_messages
+    {
+        for (k, inst) in log_data_events_to_parsed(logs, slot).into_iter().enumerate() {
+            result.push(IndexedInstruction {
+                index: format!("logevent.{}", k + 1),
+                instruction: inst,
+                slot,
+            });
+        }
+    }
+
     result
+}
+
+/// `sol_log_data` 在 logMessages 中输出的行前缀。
+const LOG_DATA_PREFIX: &str = "Program data: ";
+
+/// 从 logMessages 中把 `Program data:`（由 `sol_log_data` 发出的事件）重建为
+/// [`ParsedInstruction`]，可当"假 CPI 指令"喂给 `instruction!` 解析。
+///
+/// - 严格绑定：用 invoke/success 维护调用栈，`Program data:` 归到当前栈顶程序；
+/// - data = 原始 log 字节（`[8 字节事件disc][payload]`，**无** e445 前缀）；
+/// - 编码自适应：优先 base58（标准 RPC/geyser），含 `+/=` 或失败则按 base64。
+pub fn log_data_events_to_parsed(log_messages: &[String], slot: u64) -> Vec<ParsedInstruction> {
+    let mut out: Vec<ParsedInstruction> = Vec::new();
+    let mut stack: Vec<Pubkey> = Vec::new();
+    for line in log_messages {
+        let line = line.as_str();
+        if let Some(payload) = line.strip_prefix(LOG_DATA_PREFIX) {
+            if let Some(prog) = stack.last()
+                && let Some(data) = decode_log_data(payload)
+            {
+                out.push(ParsedInstruction {
+                    program: *prog,
+                    accounts: Vec::new(),
+                    data,
+                    slot,
+                });
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("Program ") {
+            let head = rest.split(' ').next().unwrap_or("");
+            if rest.contains(" invoke") {
+                if let Ok(pk) = <Pubkey as std::str::FromStr>::from_str(head) {
+                    stack.push(pk);
+                }
+            } else if rest.contains(" success") || rest.contains(" failed") {
+                stack.pop();
+            }
+            // "Program log: ..." / "Program return: ..." 忽略
+        }
+    }
+    out
+}
+
+/// 自适应解码 log 数据：base58（标准）或 base64（某些 explorer dump）。
+fn decode_log_data(s: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    let t = s.trim();
+    if t.is_empty() {
+        return None;
+    }
+    if t.contains('=') || t.contains('+') || t.contains('/') {
+        return base64::engine::general_purpose::STANDARD.decode(t).ok();
+    }
+    if let Ok(v) = bs58::decode(t).into_vec() {
+        return Some(v);
+    }
+    base64::engine::general_purpose::STANDARD.decode(t).ok()
 }
 
 #[derive(Debug, Clone, Copy)]

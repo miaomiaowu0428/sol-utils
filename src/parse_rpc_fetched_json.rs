@@ -68,10 +68,22 @@ pub async fn parse_fetched_json(tx: impl Into<EncodedConfirmedTransactionWithSta
         return vec![];
     };
 
-    let Some(OptionSerializer::Some(inner_ixs)) = meta.map(|meta| meta.inner_instructions) else {
-        return vec![];
+    // logMessages（RPC JSON 若带则用）
+    let log_msgs: Vec<String> = meta
+        .as_ref()
+        .and_then(|m| match &m.log_messages {
+            OptionSerializer::Some(v) => Some(v.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    let inner_ixs: HashMap<_, _> = match meta.map(|m| m.inner_instructions) {
+        Some(OptionSerializer::Some(inner)) => inner
+            .into_iter()
+            .map(|item| (item.index, item.instructions))
+            .collect(),
+        _ => HashMap::new(),
     };
-    let inner_ixs: HashMap<_, _> = inner_ixs.into_iter().map(|item| (item.index, item.instructions)).collect();
 
     let mut account_keys: Vec<_> = accounts_of(&message).await;
 
@@ -111,6 +123,19 @@ pub async fn parse_fetched_json(tx: impl Into<EncodedConfirmedTransactionWithSta
             }
         }
     }
+
+    // 追加 logMessages 里的 "Program data:" 事件（重建为假 CPI 指令）
+    for (k, inst) in crate::log_data_events_to_parsed(&log_msgs, slot)
+        .into_iter()
+        .enumerate()
+    {
+        res.push(IndexedInstruction {
+            index: format!("logevent.{}", k + 1),
+            instruction: inst,
+            slot,
+        });
+    }
+
     res
 }
 
