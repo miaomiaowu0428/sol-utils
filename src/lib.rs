@@ -331,40 +331,106 @@ impl SmallDecimalFormat for f32 {
 /// 全局缓存的 blockhash 及其获取时间
 static BLOCKHASH_CACHE: LazyLock<RwLock<Option<(Hash, Instant)>>> = LazyLock::new(|| RwLock::new(None));
 
-/// 获取（并自动缓存）最新 blockhash，30秒内重复调用直接返回缓存，失败自动重试3次
-pub async fn get_cached_blockhash(json_rpc_client: &solana_client::nonblocking::rpc_client::RpcClient) -> Option<Hash> {
-    {
-        let cache = BLOCKHASH_CACHE.read().await;
-        if let Some((hash, ts)) = &*cache {
-            if ts.elapsed() < Duration::from_secs(30) {
-                return Some(*hash);
-            }
-        }
-    }
-    // 超时或未缓存，重试获取
+/// 供“取用后刷新”使用的全局 RPC client（在 [`spawn_blockhash_refresher`] 中注入）。
+static BLOCKHASH_RPC: std::sync::OnceLock<Arc<solana_client::nonblocking::rpc_client::RpcClient>> =
+    std::sync::OnceLock::new();
+
+/// 单飞标志：同一时刻只允许一个后台刷新任务在跑，避免高频取用把 RPC 打爆。
+static BLOCKHASH_REFRESHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 缓存有效期（秒）。与 [`BLOCKHASH_REFRESH_INTERVAL_SECS`] 保持一致，保证调用方拿到的 hash 足够新鲜。
+pub const BLOCKHASH_CACHE_TTL_SECS: u64 = 1;
+
+/// 拉取最新 blockhash 写入缓存并打印，成功返回新值（失败重试 5 次）。
+async fn fetch_and_store(json_rpc_client: &solana_client::nonblocking::rpc_client::RpcClient) -> Option<Hash> {
     let mut _last_err = None;
     for _ in 0..5 {
         match json_rpc_client.get_latest_blockhash().await {
             Ok(hash) => {
                 let mut cache = BLOCKHASH_CACHE.write().await;
                 *cache = Some((hash, Instant::now()));
+                log::info!("🔄 blockhash 更新: {hash}");
                 return Some(hash);
             }
             Err(e) => {
                 _last_err = Some(e);
-                std::thread::sleep(Duration::from_millis(50));
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
     }
     None
 }
 
+/// 取用触发刷新的最小间隔：200ms ≈ **每秒最多 5 次**。
+/// （主网约 2.5~3 个 slot/秒，即使后续加速也不超过 5 个，每个 slot 刷一次足矣。）
+const MIN_REFRESH_INTERVAL: Duration = Duration::from_millis(200);
+
+/// 上次"取用触发刷新"的时刻（用于频率限流）。
+static BLOCKHASH_LAST_REFRESH: LazyLock<std::sync::Mutex<Option<Instant>>> =
+    LazyLock::new(|| std::sync::Mutex::new(None));
+
+/// 取用缓存后，后台异步刷新一次。
+///
+/// 双重限制：
+/// - **频率限流**：距上次不足 [`MIN_REFRESH_INTERVAL`]（200ms）直接跳过 → 每秒最多 5 次；
+/// - **单飞**：已有刷新任务在跑时跳过。
+///
+/// 均不阻塞调用方（后台 spawn）。
+fn trigger_background_refresh() {
+    use std::sync::atomic::Ordering;
+    // 频率限流（同步锁只在极短临界区内持有，不跨 await）
+    {
+        let mut last = BLOCKHASH_LAST_REFRESH.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(t) = *last {
+            if t.elapsed() < MIN_REFRESH_INTERVAL {
+                return;
+            }
+        }
+        *last = Some(Instant::now());
+    }
+    if BLOCKHASH_REFRESHING.swap(true, Ordering::AcqRel) {
+        return; // 已有刷新在跑
+    }
+    let Some(client) = BLOCKHASH_RPC.get().cloned() else {
+        BLOCKHASH_REFRESHING.store(false, Ordering::Release);
+        return;
+    };
+    tokio::spawn(async move {
+        fetch_and_store(&client).await;
+        BLOCKHASH_REFRESHING.store(false, Ordering::Release);
+    });
+}
+
+/// 获取 blockhash。
+///
+/// - 命中缓存（[`BLOCKHASH_CACHE_TTL_SECS`] 内）：**立即返回**，并触发一次后台异步刷新，
+///   使缓存始终保持最新（不阻塞调用方）。
+/// - 未命中/已过期：现场拉取（重试 5 次）。
+///
+/// 每次真正刷新缓存都会打印新的 blockhash 值。
+pub async fn get_cached_blockhash(json_rpc_client: &solana_client::nonblocking::rpc_client::RpcClient) -> Option<Hash> {
+    // 命中缓存 → 立即返回 + 触发后台刷新
+    let hit = {
+        let cache = BLOCKHASH_CACHE.read().await;
+        match &*cache {
+            Some((hash, ts)) if ts.elapsed() < Duration::from_secs(BLOCKHASH_CACHE_TTL_SECS) => Some(*hash),
+            _ => None,
+        }
+    };
+    if let Some(hash) = hit {
+        trigger_background_refresh();
+        return Some(hash);
+    }
+    // 未命中/过期 → 现场获取
+    fetch_and_store(json_rpc_client).await
+}
+
 /// 后台 blockhash 缓存刷新间隔（秒）。
-pub const BLOCKHASH_REFRESH_INTERVAL_SECS: u64 = 30;
+pub const BLOCKHASH_REFRESH_INTERVAL_SECS: u64 = 1;
 
 /// 启动后台 blockhash 缓存刷新任务。
 ///
-/// 每 `BLOCKHASH_REFRESH_INTERVAL_SECS`（默认 30s）主动调用 [`get_cached_blockhash`]
+/// 每 `BLOCKHASH_REFRESH_INTERVAL_SECS`（默认 1s）主动调用 [`get_cached_blockhash`]
 /// 更新全局缓存，让 [`get_cached_blockhash`] 的调用方几乎总是命中内存缓存、
 /// 无需在发送路径上现场等待 RPC。首次会立即刷新一次。
 ///
@@ -379,15 +445,18 @@ pub const BLOCKHASH_REFRESH_INTERVAL_SECS: u64 = 30;
 pub fn spawn_blockhash_refresher(
     json_rpc_client: Arc<solana_client::nonblocking::rpc_client::RpcClient>,
 ) -> tokio::task::JoinHandle<()> {
+    // 注入全局 RPC client，供“取用后刷新”使用
+    let _ = BLOCKHASH_RPC.set(json_rpc_client.clone());
     tokio::spawn(async move {
         // 首次立即刷新，保证缓存有值
-        get_cached_blockhash(&json_rpc_client).await;
-        // 之后每 30s 主动刷新；interval 首 tick 立即触发，先消费掉避免与首次重复
+        fetch_and_store(&json_rpc_client).await;
+        // 之后每 `BLOCKHASH_REFRESH_INTERVAL_SECS`（默认 1s）强制刷新
+        // （用 fetch_and_store 而非 get_cached_blockhash：后者在 TTL 内会命中缓存，不刷新）
         let mut ticker = tokio::time::interval(Duration::from_secs(BLOCKHASH_REFRESH_INTERVAL_SECS));
         ticker.tick().await;
         loop {
             ticker.tick().await;
-            get_cached_blockhash(&json_rpc_client).await;
+            fetch_and_store(&json_rpc_client).await;
         }
     })
 }
@@ -1359,31 +1428,29 @@ static LOGGER_HANDLE: std::sync::OnceLock<LoggerHandle> = std::sync::OnceLock::n
 /// 注：本函数不返回 handle；handle 被存入 `LOGGER_HANDLE` 静态变量保活。
 /// 若需要在进程退出前主动 flush，调 [`flush_logger`]。
 pub fn init_logger() {
-    if LOGGER_HANDLE.get().is_some() {
-        return;
-    }
-    let handle = Logger::try_with_env() // 👈 从环境变量读
-        .unwrap_or_else(|_| Logger::with(LevelFilter::Info)) // 兜底
-        .format(custom_format)
-        .rotate(
-            Criterion::AgeOrSize(Age::Day, 5 * 1024 * 1024),
-            Naming::TimestampsCustomFormat {
-                current_infix: None,
-                format: "%Y%m%d_%H%M%S",
-            },
-            Cleanup::Never,
-        )
-        .log_to_file(FileSpec::default())
-        // 注意：故意不调 .duplicate_to_stdout(...)，stdout duplicate 永远是同步的，
-        // 是热路径上抖动的最大来源。如需排错临时打开，请改为 Duplicate::Warn 或 Error。
-        .write_mode(WriteMode::Async)
-        .start()
-        .unwrap();
-    // 多线程同时首调时：第一个赢家存进 OnceLock，败者的 handle 会被 drop —— 后者
-    // 在 start() 之后立刻发生，此时 logger facade 已经被赢家注册，败者的后台线程
-    // 因 LoggerHandle 被 drop 而停止。为避免这种竞态导致日志丢失，理论上应在 start()
-    // 前先 CAS；实际所有现有调用点都在 main 入口单线程串行调，无需额外保护。
-    let _ = LOGGER_HANDLE.set(handle);
+    // 用 `Once` 保证即使在多线程（如 cargo test 并行跑测试）下也只初始化一次，
+    // 避免两个线程同时走到 `Logger::start()` 导致 `log::set_logger` 二次注册 panic。
+    static LOGGER_INIT: std::sync::Once = std::sync::Once::new();
+    LOGGER_INIT.call_once(|| {
+        let handle = Logger::try_with_env() // 👈 从环境变量读
+            .unwrap_or_else(|_| Logger::with(LevelFilter::Info)) // 兜底
+            .format(custom_format)
+            .rotate(
+                Criterion::AgeOrSize(Age::Day, 5 * 1024 * 1024),
+                Naming::TimestampsCustomFormat {
+                    current_infix: None,
+                    format: "%Y%m%d_%H%M%S",
+                },
+                Cleanup::Never,
+            )
+            .log_to_file(FileSpec::default())
+            // 注意：故意不调 .duplicate_to_stdout(...)，stdout duplicate 永远是同步的，
+            // 是热路径上抖动的最大来源。如需排错临时打开，请改为 Duplicate::Warn 或 Error。
+            .write_mode(WriteMode::Async)
+            .start()
+            .unwrap();
+        let _ = LOGGER_HANDLE.set(handle);
+    });
 }
 
 /// 主动 flush 异步 writer 缓冲区（建议在 main() 正常结束前调用一次，
