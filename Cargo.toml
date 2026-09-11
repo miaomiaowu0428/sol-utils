@@ -21,6 +21,7 @@ spl-token = { version = "9.0.0", features = ["no-entrypoint"] }
 spl-token-2022 = { version = "10.0.0", features = ["no-entrypoint"] }
 whirlwind = { git = "https://github.com/miaomiaowu0428/whirlwind.git" }
 async-trait = "0.1.89"
+inventory = "0.3"
 solana-address-lookup-table-interface = "3.0.1"
 solana-transaction-status-client-types = "3.1.8"
 bs58 = "0.5.1"

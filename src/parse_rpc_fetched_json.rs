@@ -124,8 +124,8 @@ pub async fn parse_fetched_json(tx: impl Into<EncodedConfirmedTransactionWithSta
         }
     }
 
-    // 追加 logMessages 里的 "Program data:" 事件（重建为假 CPI 指令）
-    for (k, inst) in crate::log_data_events_to_parsed(&log_msgs, slot)
+    // 追加 logMessages 里的事件（重建为假 CPI 指令；由各协议注册的解析器产出）
+    for (k, inst) in crate::log_events::parse_log_events(&log_msgs, slot)
         .into_iter()
         .enumerate()
     {
