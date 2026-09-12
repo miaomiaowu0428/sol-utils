@@ -55,7 +55,7 @@ pub mod units;
 
 pub use token_type::{
     ATA_PROGRAM, MEMO_PROGRAM, SYSTEM_PROGRAM, TOKEN_PROGRAM, TOKEN_PROGRAM_2022, TokenType, USDC_MINT, WSOL_MINT,
-    create_ata_ix,
+    ResolveError, create_ata_ix,
 };
 
 pub use log_events::{LogEventParser, LogEventParserFn, parse_log_events, walk_log_with_program_stack};
