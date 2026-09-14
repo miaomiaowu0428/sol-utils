@@ -20,20 +20,20 @@ use solana_sdk::{
 };
 
 /// Associated Token Program（标准 ATA）。
-pub static ATA_PROGRAM: Pubkey = pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+pub static ATA_PROGRAM: Pubkey = const_accounts::ATA_PROGRAM;
 /// SPL Token 程序（tokenkeg）。
-pub static TOKEN_PROGRAM: Pubkey = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+pub static TOKEN_PROGRAM: Pubkey = const_accounts::TOKEN_PROGRAM;
 /// SPL Token-2022 程序。
-pub static TOKEN_PROGRAM_2022: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+pub static TOKEN_PROGRAM_2022: Pubkey = const_accounts::TOKEN_PROGRAM_2022;
 /// Memo 程序。
-pub static MEMO_PROGRAM: Pubkey = pubkey!("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+pub static MEMO_PROGRAM: Pubkey = const_accounts::MEMO_PROGRAM;
 /// System program（建 ATA 时用）。
-pub static SYSTEM_PROGRAM: Pubkey = pubkey!("11111111111111111111111111111111");
+pub static SYSTEM_PROGRAM: Pubkey = const_accounts::SYSTEM_PROGRAM;
 
 /// 包装后的 SOL（WSOL）mint。
-pub static WSOL_MINT: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
+pub static WSOL_MINT: Pubkey = const_accounts::WSOL_MINT;
 /// USDC mint。
-pub static USDC_MINT: Pubkey = pubkey!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+pub static USDC_MINT: Pubkey = const_accounts::USDC_MINT;
 
 /// mint 账户里 `decimals` 字节的偏移（SPL Mint 与 Token-2022 base layout 一致）。
 const MINT_DECIMALS_OFFSET: usize = 44;
@@ -92,6 +92,16 @@ impl TokenType {
         }
     }
 
+    /// mint 地址的**引用**（借用 `self`，生命周期跟 `TokenType` 一样长）。
+    ///
+    /// 给那些需要「长期借用 mint 地址」的结构用 —— `&token.mint()` 是临时值，
+    /// 活不过一条语句（E0716）。
+    pub const fn mint_ref(&self) -> &Pubkey {
+        match self {
+            Self::Legacy { mint, .. } | Self::Token2022 { mint, .. } => mint,
+        }
+    }
+
     /// 小数位。
     pub const fn decimals(&self) -> u8 {
         match self {
@@ -104,6 +114,15 @@ impl TokenType {
         match self {
             Self::Legacy { .. } => TOKEN_PROGRAM,
             Self::Token2022 { .. } => TOKEN_PROGRAM_2022,
+        }
+    }
+
+    /// token program 的 **`'static` 引用**（只有两种，都是静态常量）。
+    /// 同 [`TokenType::mint_ref`]，避开 `&token.program()` 的临时值问题。
+    pub const fn program_ref(&self) -> &'static Pubkey {
+        match self {
+            Self::Legacy { .. } => &TOKEN_PROGRAM,
+            Self::Token2022 { .. } => &TOKEN_PROGRAM_2022,
         }
     }
 
