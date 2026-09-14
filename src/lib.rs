@@ -21,7 +21,6 @@ use solana_client::rpc_config::CommitmentConfig;
 use solana_sdk::bs58;
 use solana_sdk::hash::Hash;
 use solana_sdk::message::Instruction;
-use solana_sdk::message::compiled_instruction::CompiledInstruction;
 use solana_sdk::message::v0::MessageAddressTableLookup;
 use solana_sdk::program_error::ProgramError;
 use solana_sdk::pubkey;
@@ -51,6 +50,7 @@ pub mod parse_rpc_fetched_json;
 pub mod pool_calculation;
 pub mod time;
 pub mod token_type;
+pub mod tx_parse;
 pub mod units;
 
 pub use token_type::{
@@ -654,75 +654,13 @@ impl IndexedInstruction {
 }
 
 pub fn flatten_instructions(tx: &TransactionFormat) -> Vec<IndexedInstruction> {
-    use solana_sdk::pubkey::Pubkey;
-    let mut result = Vec::new();
-
-    // 获取主指令
-    let main_instructions = tx.transation.message.instructions();
-    let account_keys: Vec<Pubkey> = tx.account_keys.to_vec();
-    let mut inner_map = std::collections::HashMap::new();
-
-    // 获取 slot 号
-    let slot = tx.slot;
-
-    // 收集内部指令
-    if let Some(meta) = &tx.meta
-        && let Some(inner_instructions) = &meta.inner_instructions
-    {
-        for group in inner_instructions {
-            inner_map.insert(group.index as usize, &group.instructions);
+    match crate::tx_parse::parse_grpc_tx(tx) {
+        Ok(parsed) => parsed.instructions,
+        Err(e) => {
+            warn!("flatten_instructions: parse failed: {e}");
+            Vec::new()
         }
     }
-
-    let parse_ix = |ix: &CompiledInstruction| {
-        let program = account_keys.get(ix.program_id_index as usize).cloned().unwrap_or_default();
-        let accounts = ix
-            .accounts
-            .iter()
-            .filter_map(|&i| account_keys.get(i as usize).cloned())
-            .collect();
-        ParsedInstruction {
-            program,
-            accounts,
-            data: ix.data.clone(),
-            slot,
-        }
-    };
-
-    for (i, main_ix) in main_instructions.iter().enumerate() {
-        let idx = (i + 1).to_string();
-        result.push(IndexedInstruction {
-            index: idx.clone(),
-            instruction: parse_ix(main_ix),
-            slot,
-        });
-
-        if let Some(inner_vec) = inner_map.get(&i) {
-            for (j, inner_ix) in inner_vec.iter().enumerate() {
-                let sub_idx = format!("{}.{}", i + 1, j + 1);
-                result.push(IndexedInstruction {
-                    index: sub_idx,
-                    instruction: parse_ix(&inner_ix.instruction),
-                    slot,
-                });
-            }
-        }
-    }
-
-    // 追加：log 事件重建出的"假 CPI 指令"（由各协议通过 `log_events` 注册的解析器产出）。
-    if let Some(meta) = &tx.meta
-        && let Some(logs) = &meta.log_messages
-    {
-        for (k, inst) in crate::log_events::parse_log_events(logs, slot).into_iter().enumerate() {
-            result.push(IndexedInstruction {
-                index: format!("logevent.{}", k + 1),
-                instruction: inst,
-                slot,
-            });
-        }
-    }
-
-    result
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -978,7 +916,7 @@ pub trait MintDecimal {
 
 impl MintDecimal for Pubkey {
     fn decimal(&self) -> u8 {
-        if self == &pubkey!("USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB") {
+        if *self == const_accounts::USD1_MINT {
             6
         } else {
             9
@@ -1031,7 +969,44 @@ pub async fn flatten_main_instructions(tx: &VersionedTransaction, slot: u64) -> 
     match &tx.message {
         solana_sdk::message::VersionedMessage::Legacy(message) => Ok(flatten_main_ix_from_legasy_msg(message, slot)),
         solana_sdk::message::VersionedMessage::V0(message) => Ok(flatten_main_ix_from_v0_msg(message, slot).await),
+        // V1（SIMD-0385）：不支持 ALT，账户全部内联在消息里，无需查链。
+        // 字段名与 V0 一致（account_keys / instructions），只是没有 address_table_lookups。
+        solana_sdk::message::VersionedMessage::V1(message) => Ok(flatten_main_ix_from_v1_msg(message, slot)),
     }
+}
+
+/// V1 消息（SIMD-0385）的主指令展开。
+///
+/// 与 V0 的差异：V1 不支持地址查找表，`account_keys` 就是全部账户，
+/// 不需要（也没有）ALT 解析这一步。索引规则沿用既有行为（从 `0` 开始）。
+pub fn flatten_main_ix_from_v1_msg(
+    solana_sdk::message::v1::Message {
+        account_keys: accounts,
+        instructions: ixs,
+        ..
+    }: &solana_sdk::message::v1::Message,
+    slot: u64,
+) -> Vec<IndexedInstruction> {
+    ixs.iter()
+        .enumerate()
+        .map(|(index, ix)| {
+            let ix_accounts = ix
+                .accounts
+                .iter()
+                .map(|acc_idx| *accounts.get(*acc_idx as usize).unwrap_or(&Pubkey::default()))
+                .collect();
+            IndexedInstruction {
+                index: index.to_string(),
+                instruction: ParsedInstruction {
+                    program: *accounts.get(ix.program_id_index as usize).unwrap_or(&Pubkey::default()),
+                    accounts: ix_accounts,
+                    data: ix.data.clone(),
+                    slot,
+                },
+                slot,
+            }
+        })
+        .collect()
 }
 
 pub async fn flatten_main_ix_from_v0_msg(
@@ -1172,11 +1147,15 @@ impl TokenBalanceChange {
         // 使用 HashMap 来匹配 pre 和 post 余额
         use std::collections::HashMap;
 
+        // 完整账户列表：静态账户 + ALT 加载的地址。
+        // 新版 TransactionFormat 不再直接暴露 account_keys，需从消息 + meta 现算。
+        let keys = crate::tx_parse::parse_grpc_tx(tx).map(|p| p.account_keys).unwrap_or_default();
+
         let mut pre_map: HashMap<Pubkey, (Pubkey, Pubkey, u8, u64)> = HashMap::new();
         for tb in pre_token_balances {
             let mint = Pubkey::from_str(&tb.mint).unwrap_or_default();
             let owner = Pubkey::from_str(&tb.owner).unwrap_or_default();
-            let token_account = tx.account_keys.get(tb.account_index as usize).cloned().unwrap_or_default();
+            let token_account = keys.get(tb.account_index as usize).cloned().unwrap_or_default();
             let amt = tb.ui_token_amount.amount.parse().unwrap_or(0u64);
             pre_map.insert(token_account, (mint, owner, tb.ui_token_amount.decimals, amt));
         }
@@ -1185,7 +1164,7 @@ impl TokenBalanceChange {
         for tb in post_token_balances {
             let mint = Pubkey::from_str(&tb.mint).unwrap_or_default();
             let owner = Pubkey::from_str(&tb.owner).unwrap_or_default();
-            let token_account = tx.account_keys.get(tb.account_index as usize).cloned().unwrap_or_default();
+            let token_account = keys.get(tb.account_index as usize).cloned().unwrap_or_default();
             let post_amt = tb.ui_token_amount.amount.parse().unwrap_or(0u64);
 
             // 查找对应的 pre 余额
@@ -1214,9 +1193,9 @@ pub trait TokenName {
 
 impl TokenName for Pubkey {
     fn name(&self) -> String {
-        if *self == pubkey!("So11111111111111111111111111111111111111112") {
+        if *self == const_accounts::WSOL_MINT {
             "Wsol".to_string()
-        } else if *self == pubkey!("USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB") {
+        } else if *self == const_accounts::USD1_MINT {
             "USD1".to_string()
         } else {
             self.to_string()
@@ -1284,16 +1263,16 @@ pub fn build_close_ata_ix(
     owner_pubkey: &Pubkey,
     signer_pubkeys: &[&Pubkey],
 ) -> Result<Instruction, ProgramError> {
-    if token_program_id == &spl_token::ID {
-        spl_token::instruction::close_account(
+    if token_program_id == &spl_token_interface::ID {
+        spl_token_interface::instruction::close_account(
             token_program_id,   // token_program_id
             account_pubkey,     // account_to_close (ATA)
             destination_pubkey, // destination (接收剩余 SOL)
             owner_pubkey,       // owner
             signer_pubkeys,     // multisigners
         )
-    } else if token_program_id == &spl_token_2022::ID {
-        spl_token_2022::instruction::close_account(
+    } else if token_program_id == &spl_token_2022_interface::ID {
+        spl_token_2022_interface::instruction::close_account(
             token_program_id,   // token_program_id
             account_pubkey,     // account_to_close (ATA)
             destination_pubkey, // destination (接收剩余 SOL)

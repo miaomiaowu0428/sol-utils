@@ -3,15 +3,15 @@ use solana_client::rpc_response::OptionSerializer;
 use solana_sdk::{pubkey, pubkey::Pubkey};
 use solana_transaction_status_client_types::{
     EncodedConfirmedTransactionWithStatusMeta, EncodedTransaction, EncodedTransactionWithStatusMeta, UiAddressTableLookup,
-    UiCompiledInstruction, UiInstruction, UiMessage, UiRawMessage, UiTransaction, UiTransactionStatusMeta,
-    UiTransactionTokenBalance,
+    UiCompiledInstruction, UiInstruction, UiMessage, UiRawMessage, UiTransaction, UiTransactionTokenBalance,
 };
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
 };
 
-pub static WSOL: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
+/// 包装后的 SOL（WSOL）mint。转发 [`const_accounts`]，保持全 workspace 单一来源。
+pub static WSOL: Pubkey = const_accounts::WSOL_MINT;
 use crate::{IndexedInstruction, get_or_fetch_alt};
 
 pub async fn accounts_of(message: &UiRawMessage) -> Vec<Pubkey> {
@@ -53,13 +53,7 @@ pub async fn accounts_of(message: &UiRawMessage) -> Vec<Pubkey> {
 }
 
 pub async fn parse_fetched_json(tx: impl Into<EncodedConfirmedTransactionWithStatusMeta>) -> Vec<IndexedInstruction> {
-    let EncodedConfirmedTransactionWithStatusMeta {
-        slot,
-        transaction,
-        block_time: _,
-    } = tx.into();
-
-    // println!("{transaction:#?}");
+    let EncodedConfirmedTransactionWithStatusMeta { slot, transaction, .. } = tx.into();
     let EncodedTransactionWithStatusMeta { transaction, meta, .. } = transaction;
     let EncodedTransaction::Json(UiTransaction { message, .. }) = transaction else {
         return vec![];
@@ -186,6 +180,7 @@ pub async fn balance_change_of(tx: impl Into<EncodedConfirmedTransactionWithStat
         slot,
         transaction,
         block_time: _,
+        ..
     } = tx.into();
     // ===============================
     // 1 拿 meta

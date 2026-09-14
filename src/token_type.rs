@@ -15,7 +15,6 @@ use std::str::FromStr;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     instruction::{AccountMeta, Instruction},
-    pubkey,
     pubkey::Pubkey,
 };
 

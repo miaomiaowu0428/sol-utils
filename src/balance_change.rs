@@ -13,7 +13,12 @@ pub fn balance_changes_of_grpc(tx: &grpc_client::TransactionFormat) -> Result<Ve
         return Err(anyhow::anyhow!("meta not found"));
     };
 
-    let account_keys = &tx.account_keys;
+    // 完整账户列表：静态账户 + ALT 加载的地址。
+    // 新版 TransactionFormat 不再直接暴露 account_keys，需从消息 + meta 现算。
+    let account_keys = crate::tx_parse::parse_grpc_tx(tx)
+        .map_err(|e| anyhow::anyhow!("parse tx failed: {e}"))?
+        .account_keys;
+    let account_keys = &account_keys;
 
     // ===============================
     // 1 SOL balance diff
