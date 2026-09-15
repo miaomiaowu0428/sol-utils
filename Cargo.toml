@@ -32,5 +32,3 @@ dotenvy = "0.15.7"
 futures = "0.3.31"
 flexi_logger = { version = "0.31.8", features = ["async"] }
 const-accounts = { git = "https://github.com/miaomiaowu0428/const-accounts.git", branch = "supportV1" }
-
-[workspace]
