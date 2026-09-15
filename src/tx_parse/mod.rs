@@ -45,6 +45,6 @@ pub use common::{
 };
 
 // 三个来源的入口，统一命名便于下游按需引入。
-pub use from_grpc::parse_grpc_tx;
+pub use from_grpc::{loaded_addresses_of, parse_grpc_tx};
 pub use from_rpc::parse_rpc_tx;
 pub use from_shred::parse_shred_tx;
