@@ -48,6 +48,7 @@ pub mod log_events;
 pub mod macros;
 pub mod parse_rpc_fetched_json;
 pub mod pool_calculation;
+pub mod signal;
 pub mod time;
 pub mod token_type;
 pub mod tx_parse;
@@ -59,6 +60,8 @@ pub use token_type::{
 };
 
 pub use log_events::{LogEventParser, LogEventParserFn, parse_log_events, walk_log_with_program_stack};
+
+pub use signal::{ShredFrom, SignalOrigin};
 
 pub trait SolToLamport {
     fn to_lamport(self) -> u64;
