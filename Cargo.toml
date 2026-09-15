@@ -10,7 +10,7 @@ log = "0.4.29"
 serde = { version = "1.0.228", features = ["derive"] }
 solana-sdk = { version = "4.0.0", features = ["full"] }
 ta = "0.5.0"
-grpc-client = { git = "https://github.com/miaomiaowu0428/grpc-client.git", branch = "supportV1" }
+grpc-client = { git = "https://github.com/miaomiaowu0428/grpc-client.git", branch = "main" }
 spl-associated-token-account = "8.0.0"
 anyhow = "1.0.100"
 tokio = "1.49.0"
@@ -31,4 +31,4 @@ base64 = "0.22"
 dotenvy = "0.15.7"
 futures = "0.3.31"
 flexi_logger = { version = "0.31.8", features = ["async"] }
-const-accounts = { git = "https://github.com/miaomiaowu0428/const-accounts.git", branch = "supportV1" }
+const-accounts = { git = "https://github.com/miaomiaowu0428/const-accounts.git", branch = "main" }
