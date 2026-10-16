@@ -104,8 +104,10 @@ pub async fn parse_rpc_tx(tx: impl Into<EncodedConfirmedTransactionWithStatusMet
     let mut instructions = Vec::new();
 
     for (index, ix) in message.instructions.iter().enumerate() {
+        // ⚠️ index 基准是**全项目统一契约**：真实顶层指令 = 1-based 位置（见
+        //    `IndexedInstruction::absolute_index`）。这里曾经是 0-based。
         instructions.push(IndexedInstruction {
-            index: index.to_string(),
+            index: (index + 1).to_string(),
             instruction: ParsedInstruction {
                 program: account_keys.get(ix.program_id_index as usize).copied().unwrap_or_default(),
                 accounts: ix
@@ -122,7 +124,7 @@ pub async fn parse_rpc_tx(tx: impl Into<EncodedConfirmedTransactionWithStatusMet
         if let Some(inner) = inner_map.get(&(index as u8)) {
             for (inner_index, ix) in inner.iter().enumerate() {
                 instructions.push(IndexedInstruction {
-                    index: format!("{index}.{inner_index}"),
+                    index: format!("{}.{}", index + 1, inner_index + 1),
                     instruction: ParsedInstruction {
                         program: account_keys
                             .get(ix.program_id_index as usize)

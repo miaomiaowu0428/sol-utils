@@ -642,7 +642,22 @@ pub struct ParsedInstruction {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct IndexedInstruction {
-    pub index: String, // 如 "1", "1.1"
+    /// 指令序号，**全项目统一契约**：
+    ///
+    /// | 形态 | 含义 |
+    /// |---|---|
+    /// | `"1"`、`"2"`…（**1-based**） | **真实顶层指令**，值 = 它在交易顶层指令序列里的位置 |
+    /// | `"1.1"`、`"1.2"`…（1-based） | 第 1 条顶层指令里的第 1/2… 条内层指令（CPI） |
+    /// | `"SetCuLimit"` / `"SetCuPrice"` / `"SetLoadedAccountsDataSizeLimit"` | V1 消息 config 的**伪装指令**（链上不存在） |
+    /// | `"logevent.N"` | 由日志重建的**假 CPI**（链上不是独立指令） |
+    ///
+    /// ⚠️ **1-based 是契约**：`log_messages` 里第 n 条 `Program <pid> invoke [1]`
+    /// 就是值为 n 的那条指令。要按日志序对齐信息（典型：每条指令的 CU），
+    /// 一律走 [`IndexedInstruction::absolute_index`]，不要用列表下标。
+    ///
+    /// 历史上 gRPC 路径是 1-based，而 RPC 路径与 `flatten_main_ix_from_*` 是 0-based；
+    /// 因为当时没有任何代码按数字解析它，所以一直没暴露。现已全部统一为 1-based。
+    pub index: String,
     pub instruction: ParsedInstruction,
     pub slot: u64,
 }
@@ -1041,7 +1056,7 @@ pub fn flatten_main_ix_from_v1_msg(
                 .map(|acc_idx| *accounts.get(*acc_idx as usize).unwrap_or(&Pubkey::default()))
                 .collect();
             IndexedInstruction {
-                index: index.to_string(),
+                index: (index + 1).to_string(),
                 instruction: ParsedInstruction {
                     program: *accounts.get(ix.program_id_index as usize).unwrap_or(&Pubkey::default()),
                     accounts: ix_accounts,
@@ -1105,7 +1120,7 @@ pub async fn flatten_main_ix_from_v0_msg(
                 .collect(); // 现在元素是 Pubkey，可正常收集
 
             IndexedInstruction {
-                index: index.to_string(),
+                index: (index + 1).to_string(),
                 instruction: ParsedInstruction {
                     // 关键：accounts 是 Vec<Pubkey>，索引访问返回 &Pubkey，需 clone 转所有权
                     program: accounts[ix.program_id_index as usize],
@@ -1132,7 +1147,7 @@ pub fn flatten_main_ix_from_legasy_msg(
         .map(|(index, ix)| {
             let ix_accounts = ix.accounts.iter().map(|index| accounts[*index as usize]).collect();
             IndexedInstruction {
-                index: index.to_string(),
+                index: (index + 1).to_string(),
                 instruction: ParsedInstruction {
                     program: accounts[ix.program_id_index as usize],
                     accounts: ix_accounts,
