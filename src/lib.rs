@@ -651,6 +651,51 @@ impl IndexedInstruction {
     pub fn is_main_ix(&self) -> bool {
         !self.index.contains('.')
     }
+
+    /// **绝对 index**：这条指令在交易**顶层指令序列**里的 **1-based** 位置。
+    ///
+    /// 取值时用 `n - 1` 当**日志序**下标 —— `log_messages` 里第 n 条
+    /// `Program <pid> invoke [1]` 对应的就是这条指令。
+    ///
+    /// # 返回 `None` 的三种情况（它们**不是**链上真实执行的顶层指令）
+    ///
+    /// - `"x.y"`：CPI / 内部指令（[`is_main_ix`](Self::is_main_ix) 为 false）
+    /// - `"SetCuLimit"` / `"SetCuPrice"` / `"SetLoadedAccountsDataSizeLimit"`：
+    ///   **V1 消息 config 的伪装指令**
+    ///   （见 [`tx_parse::inject_v1_config_as_instructions`]）——
+    ///   链上不存在，`log_messages` 里也没有它的 `invoke [1]`
+    /// - `"logevent.N"`：由 `log_messages` 里的事件重建出的**假 CPI**
+    ///
+    /// # 为什么需要它
+    ///
+    /// [`is_main_ix`](Self::is_main_ix) 只是"index 不含点"，它会把上面**后两类伪指令**
+    /// 也当成主指令。于是任何"把展开后的指令序列与日志里的 `invoke [1]` **按位置**配对"
+    /// 的代码，在 **V1 交易**上都会因为最前面多出的伪装指令而**整体错位**（伪装条数
+    /// `S` = 该 tx config 里非空字段数，1~3）。要拿"这条指令花了多少 CU"这类
+    /// **按日志顺序**对齐的信息，必须用本方法取真实位置，别用列表下标。
+    ///
+    /// # 示例
+    ///
+    /// ```ignore
+    /// // 日志里每条主指令的 CU，按 `invoke [1]` 顺序（0-based）
+    /// let cu_list = parse_main_cu(logs);
+    /// for ix in ixs.iter() {
+    ///     let Some((_, Some(consumed), _)) = ix.absolute_index().and_then(|n| cu_list.get(n - 1)) else { continue };
+    ///     // …这条指令的 CU 就是它自己的，不是别人的
+    /// }
+    /// ```
+    pub fn absolute_index(&self) -> Option<usize> {
+        if !self.is_main_ix() {
+            return None; // CPI / 内部指令：不是链上顶层调用
+        }
+        if crate::tx_parse::synthetic_index::is_synthetic(&self.index) {
+            return None; // V1 config 伪装指令：日志里没有它
+        }
+        if self.index.starts_with(crate::tx_parse::LOG_EVENT_INDEX_PREFIX) {
+            return None; // 日志重建的假 CPI：日志里也没有它
+        }
+        self.index.parse::<usize>().ok()
+    }
 }
 
 pub fn flatten_instructions(tx: &TransactionFormat) -> Vec<IndexedInstruction> {

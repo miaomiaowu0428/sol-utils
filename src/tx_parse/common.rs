@@ -315,7 +315,7 @@ pub fn flatten_instructions_with_keys(
     if let Some(logs) = log_messages {
         for (k, inst) in crate::log_events::parse_log_events(logs, slot).into_iter().enumerate() {
             out.push(IndexedInstruction {
-                index: format!("logevent.{}", k + 1),
+                index: format!("{LOG_EVENT_INDEX_PREFIX}{}", k + 1),
                 instruction: inst,
                 slot,
             });
@@ -330,6 +330,11 @@ pub fn flatten_instructions_with_keys(
 /// **不带点**，所以 `IndexedInstruction::is_main_ix()` 会判定为 `true`，
 /// 下游按"主指令"遍历时能自然看到它们——这正是我们要的效果：
 /// 让 V1 的 config 在下游眼里和真实的 ComputeBudget 指令长得一样。
+///
+/// ⚠️ 代价：它们**不在** `log_messages` 的 `invoke [1]` 序列里。任何要跟日志
+/// **按位置**对齐的代码（典型：从 `consumed N of M` 取每条指令的 CU）都必须
+/// 先用 [`IndexedInstruction::absolute_index`](crate::IndexedInstruction::absolute_index)
+/// 排除它们，否则每笔 V1 交易都会整体错位。
 pub mod synthetic_index {
     /// 对应 `SetComputeUnitLimit`。
     pub const SET_CU_LIMIT: &str = "SetCuLimit";
@@ -337,7 +342,20 @@ pub mod synthetic_index {
     pub const SET_CU_PRICE: &str = "SetCuPrice";
     /// 对应 `SetLoadedAccountsDataSizeLimit`。
     pub const SET_LOADED_ACCOUNTS_DATA_SIZE_LIMIT: &str = "SetLoadedAccountsDataSizeLimit";
+
+    /// 是否是 V1 config 的伪装 index 名。
+    ///
+    /// **只认这三条常量**，不靠"是不是纯数字"来判断——将来改命名也不会漏。
+    pub fn is_synthetic(name: &str) -> bool {
+        name == SET_CU_LIMIT || name == SET_CU_PRICE || name == SET_LOADED_ACCOUNTS_DATA_SIZE_LIMIT
+    }
 }
+
+/// 日志事件重建出的**假 CPI** 的 index 前缀（`"logevent.1"`、`"logevent.2"`…）。
+///
+/// 它们同样**不在** `invoke [1]` 序列里（是"事后补出来的"），
+/// 且排在所有真实主指令**之后**。
+pub const LOG_EVENT_INDEX_PREFIX: &str = "logevent.";
 
 /// 把 V1 消息的 `config` 伪装成 `ComputeBudgetProgram` 指令，插入指令序列开头。
 ///

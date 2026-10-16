@@ -146,7 +146,7 @@ pub async fn parse_rpc_tx(tx: impl Into<EncodedConfirmedTransactionWithStatusMet
     if let Some(logs) = log_msgs.as_deref() {
         for (k, inst) in crate::log_events::parse_log_events(logs, slot).into_iter().enumerate() {
             instructions.push(IndexedInstruction {
-                index: format!("logevent.{}", k + 1),
+                index: format!("{}{}", crate::tx_parse::LOG_EVENT_INDEX_PREFIX, k + 1),
                 instruction: inst,
                 slot,
             });

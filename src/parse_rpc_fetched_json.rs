@@ -83,8 +83,12 @@ pub async fn parse_fetched_json(tx: impl Into<EncodedConfirmedTransactionWithSta
 
     let mut res = vec![];
     for (index, ix) in message.instructions.into_iter().enumerate() {
+        // ⚠️ 与 gRPC 路径（`tx_parse::flatten_instructions_with_keys`）保持**同一套基准**：
+        //    主指令 index 是 **1-based** 的顶层序号、内部指令是 `"父.子"`（都从 1 开始）。
+        //    两套基准不一致会让 `IndexedInstruction::absolute_index()` 在两条来源上
+        //    返回不同的含义（曾经这里是 0-based）。
         res.push(IndexedInstruction {
-            index: index.to_string(),
+            index: (index + 1).to_string(),
             instruction: crate::ParsedInstruction {
                 program: account_keys[ix.program_id_index as usize],
                 accounts: ix.accounts.iter().map(|index| account_keys[*index as usize]).collect(),
@@ -105,7 +109,7 @@ pub async fn parse_fetched_json(tx: impl Into<EncodedConfirmedTransactionWithSta
                     continue;
                 };
                 res.push(IndexedInstruction {
-                    index: format!("{index}.{inner_index}"),
+                    index: format!("{}.{}", index + 1, inner_index + 1),
                     instruction: crate::ParsedInstruction {
                         program: account_keys[*program_id_index as usize],
                         accounts: accounts.iter().map(|index| account_keys[*index as usize]).collect(),
@@ -124,7 +128,7 @@ pub async fn parse_fetched_json(tx: impl Into<EncodedConfirmedTransactionWithSta
         .enumerate()
     {
         res.push(IndexedInstruction {
-            index: format!("logevent.{}", k + 1),
+            index: format!("{}{}", crate::tx_parse::LOG_EVENT_INDEX_PREFIX, k + 1),
             instruction: inst,
             slot,
         });
