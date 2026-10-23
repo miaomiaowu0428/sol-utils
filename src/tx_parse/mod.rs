@@ -41,7 +41,8 @@ pub mod ui_meta;
 
 pub use common::{
     account_keys_of, flatten_instructions_with_keys, inject_v1_config_as_instructions, synthetic_index, tx_config_of,
-    ComputeBudgetValues, ParseError, ParsedTx, TxConfig, V1Config, LOG_EVENT_INDEX_PREFIX,
+    v1_config_as_instructions, v1_config_of, v1_equivalent_cu_price, ComputeBudgetValues, ParseError, ParsedTx,
+    TxConfig, V1Config, LOG_EVENT_INDEX_PREFIX,
 };
 
 // 三个来源的入口，统一命名便于下游按需引入。

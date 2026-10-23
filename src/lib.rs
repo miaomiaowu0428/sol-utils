@@ -648,7 +648,7 @@ pub struct IndexedInstruction {
     /// |---|---|
     /// | `"1"`、`"2"`…（**1-based**） | **真实顶层指令**，值 = 它在交易顶层指令序列里的位置 |
     /// | `"1.1"`、`"1.2"`…（1-based） | 第 1 条顶层指令里的第 1/2… 条内层指令（CPI） |
-    /// | `"SetCuLimit"` / `"SetCuPrice"` / `"SetLoadedAccountsDataSizeLimit"` | V1 消息 config 的**伪装指令**（链上不存在） |
+    /// | `"SetCuLimit"` / `"SetCuPrice"` / `"SetLoadedAccountsDataSizeLimit"` | V1 消息 config 的**伪装指令**（链上不存在；**值已按 V0 口径折算**，`price × limit / 1e6` 就是 V1 的 `priority_fee`） |
     /// | `"logevent.N"` | 由日志重建的**假 CPI**（链上不是独立指令） |
     ///
     /// ⚠️ **1-based 是契约**：`log_messages` 里第 n 条 `Program <pid> invoke [1]`
@@ -676,9 +676,14 @@ impl IndexedInstruction {
     ///
     /// - `"x.y"`：CPI / 内部指令（[`is_main_ix`](Self::is_main_ix) 为 false）
     /// - `"SetCuLimit"` / `"SetCuPrice"` / `"SetLoadedAccountsDataSizeLimit"`：
-    ///   **V1 消息 config 的伪装指令**
-    ///   （见 [`tx_parse::inject_v1_config_as_instructions`]）——
-    ///   链上不存在，`log_messages` 里也没有它的 `invoke [1]`
+    ///   **V1 消息 config 的伪装指令**（见
+    ///   [`tx_parse::v1_config_as_instructions`]）——
+    ///   链上不存在，`log_messages` 里也没有它的 `invoke [1]`。
+    ///
+    ///   ⚠️ 它同时出现在**两条解析链路**上：`tx_parse`
+    ///   （grpc / rpc / shred，经 [`tx_parse::inject_v1_config_as_instructions`]）
+    ///   和信号链路的 [`flatten_main_instructions`]（shred / preconf 的
+    ///   `SignalCtx.ixs`）。两条链路用的是同一个投影函数，值一致。
     /// - `"logevent.N"`：由 `log_messages` 里的事件重建出的**假 CPI**
     ///
     /// # 为什么需要它
@@ -1039,34 +1044,55 @@ pub async fn flatten_main_instructions(tx: &VersionedTransaction, slot: u64) -> 
 ///
 /// 与 V0 的差异：V1 不支持地址查找表，`account_keys` 就是全部账户，
 /// 不需要（也没有）ALT 解析这一步。索引规则沿用既有行为（从 `0` 开始）。
+///
+/// # V1 的 compute budget 伪装指令（**必须有，且值必须正确**）
+///
+/// V1 把 `compute_unit_limit` / `priority_fee` 搬进了消息的 `config`，
+/// **指令序列里没有** `ComputeBudgetProgram` 调用。如果这里只展开真实指令，
+/// 所有"扫指令找 CU"的下游（典型：`dash_snipe_high_fee` 的触发判定
+/// 用 `cu_price × cu_limit / 1e6` 算 gas）在 V1 交易上都会**读成 0**，
+/// 静默漏掉全部 V1 的高费率对手。
+///
+/// 所以这里把 `config` 投影成 1~3 条伪装指令插在最前面 —— 与
+/// [`tx_parse::inject_v1_config_as_instructions`] **同一个投影函数**
+/// （[`tx_parse::v1_config_as_instructions`]），保证信号链路和
+/// grpc/rpc 链路上同一笔 V1 交易看到的值完全一致。
+///
+/// 注意 `priority_fee` 会被**反解成等效单价**（`ceil(fee × 1e6 / limit)`），
+/// 不是把 lamports 总额直接填进 `micro_lamports` —— 详见
+/// [`tx_parse::v1_equivalent_cu_price`]。
 pub fn flatten_main_ix_from_v1_msg(
     solana_sdk::message::v1::Message {
         account_keys: accounts,
         instructions: ixs,
+        config,
         ..
     }: &solana_sdk::message::v1::Message,
     slot: u64,
 ) -> Vec<IndexedInstruction> {
-    ixs.iter()
-        .enumerate()
-        .map(|(index, ix)| {
-            let ix_accounts = ix
-                .accounts
-                .iter()
-                .map(|acc_idx| *accounts.get(*acc_idx as usize).unwrap_or(&Pubkey::default()))
-                .collect();
-            IndexedInstruction {
-                index: (index + 1).to_string(),
-                instruction: ParsedInstruction {
-                    program: *accounts.get(ix.program_id_index as usize).unwrap_or(&Pubkey::default()),
-                    accounts: ix_accounts,
-                    data: ix.data.clone(),
-                    slot,
-                },
+    // ① V1 config → 伪装指令（插在最前面，与链上"ComputeBudget 必须最先"一致）
+    let mut out = crate::tx_parse::v1_config_as_instructions(&crate::tx_parse::v1_config_of(config), slot);
+
+    // ② 真实顶层指令（1-based；伪指令的 index 是名字，不带点，不会被误当数字）
+    out.extend(ixs.iter().enumerate().map(|(index, ix)| {
+        let ix_accounts = ix
+            .accounts
+            .iter()
+            .map(|acc_idx| *accounts.get(*acc_idx as usize).unwrap_or(&Pubkey::default()))
+            .collect();
+        IndexedInstruction {
+            index: (index + 1).to_string(),
+            instruction: ParsedInstruction {
+                program: *accounts.get(ix.program_id_index as usize).unwrap_or(&Pubkey::default()),
+                accounts: ix_accounts,
+                data: ix.data.clone(),
                 slot,
-            }
-        })
-        .collect()
+            },
+            slot,
+        }
+    }));
+
+    out
 }
 
 pub async fn flatten_main_ix_from_v0_msg(
@@ -1466,4 +1492,108 @@ pub fn custom_format(w: &mut dyn std::io::Write, now: &mut DeferredNow, record: 
         record.line().unwrap_or(0),                  // 行号
         &record.args()                               // 日志内容
     )
+}
+
+#[cfg(test)]
+mod v1_flatten_tests {
+    //! 信号链路（shred / preconf）的 V1 展平：**必须带上 V1 config 的伪装
+    //! ComputeBudget 指令，且单价是按 limit 折算过的等效值**。
+    //!
+    //! 这条链路是 `dash_snipe_high_fee` 触发判定的唯一输入
+    //! （`SignalCtx.ixs` → `provider_tip::gas_lamports`）。少了伪装指令，
+    //! 每一笔 V1 对手交易都会被读成 gas = 0，整个策略对 V1 竞价者失效。
+
+    use super::*;
+    use solana_sdk::message::MessageHeader;
+    use solana_sdk::message::compiled_instruction::CompiledInstruction;
+    use solana_sdk::message::v1::TransactionConfig;
+
+    /// 造一笔 V1 消息：账户表里第 0 个是 ComputeBudgetProgram（仅作占位），
+    /// 指令序列只有一条（program_id_index = 0）。
+    fn v1_msg(priority_fee: Option<u64>, cu_limit: Option<u32>) -> solana_sdk::message::v1::Message {
+        solana_sdk::message::v1::Message {
+            header: MessageHeader {
+                num_required_signatures: 1,
+                num_readonly_signed_accounts: 0,
+                num_readonly_unsigned_accounts: 1,
+            },
+            config: TransactionConfig {
+                priority_fee,
+                compute_unit_limit: cu_limit,
+                loaded_accounts_data_size_limit: None,
+                heap_size: None,
+            },
+            lifetime_specifier: Hash::default(),
+            account_keys: vec![const_accounts::COMPUTE_BUDGET_PROGRAM],
+            instructions: vec![CompiledInstruction {
+                program_id_index: 0,
+                accounts: vec![],
+                data: vec![9, 9, 9],
+            }],
+        }
+    }
+
+    /// V1 → 伪装指令：**gas 口径等价**（`price × limit / 1e6 == priority_fee`）。
+    #[test]
+    fn v1_signal_path_projects_equivalent_cu_budget() {
+        const FEE: u64 = 15_000_000_000; // 15 SOL 优先费（highfee 最高档之上）
+        const LIMIT: u32 = 200_000;
+
+        let msg = v1_msg(Some(FEE), Some(LIMIT));
+        let ixs = flatten_main_ix_from_v1_msg(&msg, 7);
+
+        // 1) 伪装指令在前，真实指令在后，且真实指令仍然是 1-based。
+        assert_eq!(ixs.len(), 3, "limit + price + 一条真实指令");
+        assert_eq!(ixs[0].index, crate::tx_parse::synthetic_index::SET_CU_LIMIT);
+        assert_eq!(ixs[1].index, crate::tx_parse::synthetic_index::SET_CU_PRICE);
+        assert_eq!(ixs[2].index, "1");
+
+        // 2) 伪装指令是主指令语义（下游遍历看得到），但不是链上真实指令
+        //    （不能拿去和 `invoke [1]` 按位置配对）。
+        assert!(ixs[0].is_main_ix() && ixs[1].is_main_ix());
+        assert_eq!(ixs[0].absolute_index(), None);
+        assert_eq!(ixs[1].absolute_index(), None);
+        assert_eq!(ixs[2].absolute_index(), Some(1));
+
+        // 3) 伪装指令的 program / data 编码与真实指令一致，能被既有扫描逻辑读回。
+        assert!(ixs[..2]
+            .iter()
+            .all(|ix| ix.instruction.program == const_accounts::COMPUTE_BUDGET_PROGRAM));
+
+        // 复用 `scan_compute_budget` 读回（等价于下游 `usful_utils::cu_limit/cu_price`）。
+        let compiled: Vec<CompiledInstruction> = ixs
+            .iter()
+            .map(|ix| CompiledInstruction {
+                program_id_index: 0,
+                accounts: vec![],
+                data: ix.instruction.data.clone(),
+            })
+            .collect();
+        let values = crate::tx_parse::common::scan_compute_budget(
+            &compiled,
+            &msg.account_keys,
+            &const_accounts::COMPUTE_BUDGET_PROGRAM,
+        )
+        .expect("V0 口径下应能扫到 CU 配置");
+        let cu_limit = values.compute_unit_limit.expect("cu_limit");
+        let cu_price = values.compute_unit_price.expect("cu_price");
+
+        // 4) limit 原样搬运；price 是折算值（不是 15e9），且两者相乘复现 15 SOL。
+        assert_eq!(cu_limit, LIMIT);
+        assert_ne!(cu_price, FEE, "不能把 V1 的 lamports 总额当单价填进去");
+
+        let gas = cu_price.saturating_mul(cu_limit as u64) / 1_000_000;
+        assert!(gas >= FEE && gas - FEE <= 1, "gas={gas} 应约等于 priority_fee={FEE}");
+    }
+
+    /// `compute_unit_limit` 缺省（V1 语义 = 0 CU）：没有可折算的单价，
+    /// 只展开真实指令，**不瞎编**伪装指令。
+    #[test]
+    fn v1_without_cu_limit_projects_nothing() {
+        let msg = v1_msg(Some(15_000_000_000), None);
+        let ixs = flatten_main_ix_from_v1_msg(&msg, 7);
+
+        assert_eq!(ixs.len(), 1, "只有真实指令");
+        assert_eq!(ixs[0].index, "1");
+    }
 }

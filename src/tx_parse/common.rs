@@ -357,6 +357,108 @@ pub mod synthetic_index {
 /// 且排在所有真实主指令**之后**。
 pub const LOG_EVENT_INDEX_PREFIX: &str = "logevent.";
 
+/// V1 的 `priority_fee`（lamports **总额**）→ **等效的** `SetComputeUnitPrice`
+/// 单价（micro-lamports/CU）。
+///
+/// # 为什么必须反解，而不是直接填
+///
+/// 两种消息对"优先费"的表达方式根本不同：
+///
+/// | 消息 | 表达 | 算法 |
+/// |---|---|---|
+/// | V0 / Legacy | 单价 `micro_lamports` + 上限 `units` | `price × limit / 1e6` |
+/// | V1 | `config.priority_fee` | **直接就是 lamports 总额** |
+///
+/// 伪装指令的全部意义就是「让 V1 在只看指令的下游眼里和 V0 长得一样」。
+/// 如果直接把 `priority_fee` 塞进 `micro_lamports` 字段，任何按 V0 口径
+/// 算 `price × limit / 1e6` 的消费者都会得到 `priority_fee × limit / 1e6`
+/// —— 20 万 CU 下**少算 5 倍**，高费率/竞价判定直接失效（曾因此让
+/// `dash_snipe_high_fee` 的 V1 对手全被读成 gas = 0）。
+///
+/// 所以这里反解：
+///
+/// ```text
+/// price = ceil(priority_fee × 1e6 / cu_limit)
+/// ```
+///
+/// 于是 `floor(price × limit / 1e6) ∈ [priority_fee, priority_fee + 1]`
+/// —— 向上取整，残差在 gas 口径下 **≤ 1 lamport**（宁可多报 1 lamport，
+/// 也不要因为截断少报一档）。
+///
+/// # 边界
+///
+/// - `cu_limit == 0`（V1 里 `compute_unit_limit` 缺省即取 0，这种交易本身就
+///   跑不完任何 CU）**没有等效单价** —— 返回 `None`，调用方不生成 price 伪装指令。
+/// - 只有 `cu_limit ≤ 运行时上限（1_400_000）`才与 V0 口径**严格**等价：
+///   夹取 limit 的消费者（如 `sol-parser-sdk` 的 `min(limit, MAX_CU_LIMIT)`）
+///   在 limit 更大时会按夹取后的值算。V1 的实际 limit 基本都 ≤ 该上限。
+pub fn v1_equivalent_cu_price(priority_fee_lamports: u64, cu_limit: u32) -> Option<u64> {
+    if cu_limit == 0 {
+        return None;
+    }
+    let micro_lamports = (priority_fee_lamports as u128).saturating_mul(1_000_000);
+    let price = micro_lamports.div_ceil(cu_limit as u128);
+    Some(u64::try_from(price).unwrap_or(u64::MAX))
+}
+
+/// 把 [`V1Config`] 投影成 1~3 条 `ComputeBudgetProgram` 伪装指令。
+///
+/// **这是「V1 → V0 口径」唯一的投影点**：`tx_parse` 的三个来源
+/// （grpc / rpc / shred，经 [`inject_v1_config_as_instructions`]）和
+/// 信号链路的指令展平（`utils::flatten_main_instructions`）都调它，
+/// 保证同一笔 V1 交易在两条链路上看到的值完全一致。
+///
+/// 顺序与真实交易惯例一致：**先 limit，再 price，最后 loaded size**。
+///
+/// 取值口径：
+///
+/// - `compute_unit_limit`：V1 与 V0 语义相同（都是 CU 上限），**原样搬运**；
+/// - `priority_fee`：V1 是总额，必须按 limit **折算成等效单价**，
+///   见 [`v1_equivalent_cu_price`]（不能直接填总额）；
+/// - `loaded_accounts_data_size_limit`：语义相同，原样搬运。
+pub fn v1_config_as_instructions(config: &V1Config, slot: u64) -> Vec<IndexedInstruction> {
+    fn make_ix(name: &str, data: Vec<u8>, slot: u64) -> IndexedInstruction {
+        IndexedInstruction {
+            index: name.to_string(),
+            instruction: ParsedInstruction {
+                program: const_accounts::COMPUTE_BUDGET_PROGRAM,
+                accounts: Vec::new(),
+                data,
+                slot,
+            },
+            slot,
+        }
+    }
+
+    let mut synthetic: Vec<IndexedInstruction> = Vec::with_capacity(3);
+
+    // ① limit：与 V0 同语义，原样搬运。
+    if let Some(cu) = config.compute_unit_limit {
+        let mut data = vec![compute_budget_tag::SET_COMPUTE_UNIT_LIMIT];
+        data.extend_from_slice(&cu.to_le_bytes());
+        synthetic.push(make_ix(synthetic_index::SET_CU_LIMIT, data, slot));
+    }
+
+    // ② price：V1 的 `priority_fee` 是**总额**，必须除以 limit 折算成单价。
+    //    直接填总额会差 limit/1e6 倍（见 `v1_equivalent_cu_price` 文档）。
+    if let Some(fee) = config.priority_fee
+        && let Some(price) = v1_equivalent_cu_price(fee, config.compute_unit_limit.unwrap_or(0))
+    {
+        let mut data = vec![compute_budget_tag::SET_COMPUTE_UNIT_PRICE];
+        data.extend_from_slice(&price.to_le_bytes());
+        synthetic.push(make_ix(synthetic_index::SET_CU_PRICE, data, slot));
+    }
+
+    // ③ loaded accounts data size：同语义，原样搬运。
+    if let Some(size) = config.loaded_accounts_data_size_limit {
+        let mut data = vec![compute_budget_tag::SET_LOADED_ACCOUNTS_DATA_SIZE_LIMIT];
+        data.extend_from_slice(&size.to_le_bytes());
+        synthetic.push(make_ix(synthetic_index::SET_LOADED_ACCOUNTS_DATA_SIZE_LIMIT, data, slot));
+    }
+
+    synthetic
+}
+
 /// 把 V1 消息的 `config` 伪装成 `ComputeBudgetProgram` 指令，插入指令序列开头。
 ///
 /// # 为什么需要这个
@@ -380,6 +482,10 @@ pub const LOG_EVENT_INDEX_PREFIX: &str = "logevent.";
 /// - `accounts`：空（ComputeBudget 指令不带账户）
 /// - 位置：插在序列**最前面**（链上要求 ComputeBudget 指令必须最先出现）
 ///
+/// **关键的一条不是"原样搬运"，而是"口径对齐"**：`priority_fee` 会被反解成
+/// 等效单价（[`v1_equivalent_cu_price`]），使 `price × limit / 1e6` 就是这笔
+/// 优先费的 lamports 总额。否则按 V0 公式算的下游会拿到一个差 limit/1e6 倍的数。
+///
 /// 唯一区别是 `index` 用了 `"SetCuLimit"` / `"SetCuPrice"` 这样的名字
 /// （不带点 → `is_main_ix()` 为 `true`），而不是数字序号。
 ///
@@ -392,42 +498,8 @@ pub fn inject_v1_config_as_instructions(parsed: &mut ParsedTx) {
         return;
     };
 
-    let slot = parsed.slot;
-    let mut synthetic: Vec<IndexedInstruction> = Vec::new();
-
-    let make_ix = |name: &str, data: Vec<u8>| -> IndexedInstruction {
-        IndexedInstruction {
-            index: name.to_string(),
-            instruction: ParsedInstruction {
-                program: const_accounts::COMPUTE_BUDGET_PROGRAM,
-                accounts: Vec::new(),
-                data,
-                slot,
-            },
-            slot,
-        }
-    };
-
-    // 顺序与真实惯例一致：先 limit 后 price。
-    if let Some(cu) = v1cfg.compute_unit_limit {
-        let mut data = vec![compute_budget_tag::SET_COMPUTE_UNIT_LIMIT];
-        data.extend_from_slice(&cu.to_le_bytes());
-        synthetic.push(make_ix(synthetic_index::SET_CU_LIMIT, data));
-    }
-
-    if let Some(price) = v1cfg.priority_fee {
-        let mut data = vec![compute_budget_tag::SET_COMPUTE_UNIT_PRICE];
-        data.extend_from_slice(&price.to_le_bytes());
-        synthetic.push(make_ix(synthetic_index::SET_CU_PRICE, data));
-    }
-
-    if let Some(size) = v1cfg.loaded_accounts_data_size_limit {
-        let mut data = vec![compute_budget_tag::SET_LOADED_ACCOUNTS_DATA_SIZE_LIMIT];
-        data.extend_from_slice(&size.to_le_bytes());
-        synthetic.push(make_ix(synthetic_index::SET_LOADED_ACCOUNTS_DATA_SIZE_LIMIT, data));
-    }
-
     // 插到最前面，模拟"ComputeBudget 指令必须最先出现"的链上约束。
+    let synthetic = v1_config_as_instructions(&v1cfg, parsed.slot);
     parsed.instructions.splice(0..0, synthetic);
 }
 
@@ -492,19 +564,23 @@ mod tests {
     use super::*;
 
     /// 闭环验证：V1 的 config 伪装成指令后，
-    /// 能被既有的 `scan_compute_budget` 原样读回。
+    /// 能被既有的 `scan_compute_budget` 原样读回，**且 gas 口径等价**。
     ///
-    /// 这正是兼容性目标——下游不用知道 V1 的存在。
+    /// 这正是兼容性目标——下游不用知道 V1 的存在，
+    /// 按 V0 公式算出来的 gas 就等于 V1 的 `priority_fee`。
     #[test]
     fn v1_config_survives_roundtrip_through_synthetic_instructions() {
+        const FEE: u64 = 1234;
+        const LIMIT: u32 = 200_000;
+
         let mut parsed = ParsedTx {
             slot: 42,
             account_keys: vec![const_accounts::COMPUTE_BUDGET_PROGRAM, const_accounts::SYSTEM_PROGRAM],
             instructions: vec![],
             config: TxConfig {
                 v1: Some(V1Config {
-                    priority_fee: Some(1234),
-                    compute_unit_limit: Some(200_000),
+                    priority_fee: Some(FEE),
+                    compute_unit_limit: Some(LIMIT),
                     loaded_accounts_data_size_limit: Some(65_536),
                     heap_size: Some(32_768),
                 }),
@@ -526,7 +602,7 @@ mod tests {
             .iter()
             .all(|ix| ix.instruction.program == const_accounts::COMPUTE_BUDGET_PROGRAM));
 
-        // 关键：用既有扫描逻辑读回，值必须一致。
+        // 关键：用既有扫描逻辑读回。
         // ComputeBudget 指令不带账户，直接用空 accounts 构造。
         let compiled: Vec<CompiledInstruction> = parsed
             .instructions
@@ -541,9 +617,67 @@ mod tests {
         let scanned = scan_compute_budget(&compiled, &parsed.account_keys, &const_accounts::COMPUTE_BUDGET_PROGRAM)
             .expect("应能扫到 ComputeBudget 值");
 
-        assert_eq!(scanned.compute_unit_limit, Some(200_000));
-        assert_eq!(scanned.compute_unit_price, Some(1234));
+        // limit / size 是原样搬运的。
+        assert_eq!(scanned.compute_unit_limit, Some(LIMIT));
         assert_eq!(scanned.loaded_accounts_data_size_limit, Some(65_536));
+
+        // price 是**折算后**的等效单价，不是 priority_fee 原值。
+        let price = scanned.compute_unit_price.expect("应生成的等效单价");
+        assert_ne!(price, FEE, "不能把 V1 的 lamports 总额直接当单价填进去");
+
+        // 核心不变量：按 V0 公式算出来的 gas == V1 的 priority_fee（±取整残差）。
+        let gas = price.saturating_mul(LIMIT as u64) / 1_000_000;
+        assert!(gas >= FEE, "向上取整：gas({gas}) 不能小于 priority_fee({FEE})");
+        assert!(gas - FEE <= 1, "取整残差最多 1 lamport，实际 {} lamports", gas - FEE);
+    }
+
+    /// 等效单价：**任意**（fee, limit）组合下，`price × limit / 1e6` 都必须
+    /// 复现 fee（向上取整，残差 ≤ 1 lamport）。
+    #[test]
+    fn v1_equivalent_price_reproduces_fee() {
+        // (priority_fee lamports, cu_limit) —— 覆盖整除 / 非整除 / 大额 / 小额
+        const CASES: &[(u64, u32)] = &[
+            (0, 200_000),
+            (1, 200_000),
+            (999, 200_000),
+            (44_800, 140_000),   // 320_000 micro-lamports × 140k CU / 1e6（整除）
+            (40_000, 200_000),   // 200_000 micro-lamports × 200k CU / 1e6（整除）
+            (1234, 200_000),     // 非整除
+            (15_000_000_000, 200_000), // 15 SOL：高费率档
+            (15_000_000_000, 1_400_000), // 15 SOL + 最大 CU
+        ];
+
+        for &(fee, limit) in CASES {
+            let price = v1_equivalent_cu_price(fee, limit).expect("limit > 0 一定有解");
+            let gas = price.saturating_mul(limit as u64) / 1_000_000;
+            assert!(gas >= fee, "fee={fee} limit={limit} price={price} gas={gas} 少报了");
+            assert!(gas - fee <= 1, "fee={fee} limit={limit} price={price} gas={gas} 残差过大");
+        }
+
+        // 整除的样本必须**精确**还原成原来的单价（不能因为取整漂移，
+        // 否则 `same_cu_1_plus_n` / `spam_min_1` 那类「单价 == 常量」的匹配会失效）。
+        assert_eq!(v1_equivalent_cu_price(44_800, 140_000), Some(320_000));
+        assert_eq!(v1_equivalent_cu_price(40_000, 200_000), Some(200_000));
+
+        // limit = 0 无解（V1 缺省 compute_unit_limit 的语义），不生成 price 伪装指令。
+        assert_eq!(v1_equivalent_cu_price(1234, 0), None);
+    }
+
+    /// `priority_fee` 有值但 `compute_unit_limit` 缺省（= 0）时，
+    /// 只能生成 limit 伪装指令，不能瞎编一个单价。
+    #[test]
+    fn v1_without_cu_limit_does_not_invent_price() {
+        let ixs = v1_config_as_instructions(
+            &V1Config {
+                priority_fee: Some(15_000_000_000),
+                compute_unit_limit: None,
+                loaded_accounts_data_size_limit: None,
+                heap_size: None,
+            },
+            7,
+        );
+
+        assert!(ixs.is_empty(), "limit 缺省时 infeasible：既无 limit 也无价格，不应生成任何伪装指令");
     }
 
     /// V0/Legacy 不该被注入——它们的 ComputeBudget 指令本来就在。
