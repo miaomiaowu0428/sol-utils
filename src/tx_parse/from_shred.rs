@@ -18,7 +18,7 @@
 use solana_sdk::transaction::VersionedTransaction;
 
 use super::common::{ParseError, ParsedTx};
-use crate::flatten_main_instructions;
+use crate::flatten_main_instructions_with_keys;
 
 /// 从 shred 交易解析出统一结果。
 ///
@@ -30,14 +30,13 @@ use crate::flatten_main_instructions;
 pub async fn parse_shred_tx(tx: &VersionedTransaction, slot: u64) -> Result<ParsedTx, ParseError> {
     // 复用既有实现：它已处理 Legacy / V0 / V1 三种消息，
     // 并在 v0 时按需查链解析 ALT。
-    let instructions = flatten_main_instructions(tx, slot)
+    //
+    // ⚠️ 用 `_with_keys` 版本：展平本来就顺手算出了完整账户列表（v0 的 ALT
+    // 也在里面解析过了）。旧写法先展平、再 `static_and_cached_keys` 克隆一遍
+    // 静态账户并重新遍历 ALT——同一份 key 列表算两遍，还要多拷一整份 Vec。
+    let (instructions, account_keys) = flatten_main_instructions_with_keys(tx, slot)
         .await
         .map_err(|_| ParseError::Unsupported("failed to flatten shred transaction"))?;
-
-    // account_keys 单独取一份，供下游按索引查账户。
-    // 注意：v0 的 ALT 地址在 `flatten_main_instructions` 内部解析，
-    // 这里为了不重复查链，仅返回静态账户 + （若有）已缓存结果。
-    let account_keys = static_and_cached_keys(tx).await;
 
     // config 提取不需要 meta——V1 从消息 config 读，V0/Legacy 扫指令。
     // 这正是 shred 路径能拿到 compute budget 的原因。
@@ -60,37 +59,3 @@ pub async fn parse_shred_tx(tx: &VersionedTransaction, slot: u64) -> Result<Pars
     Ok(parsed)
 }
 
-/// 取 shred 交易的完整账户列表。
-///
-/// - Legacy / V1：直接返回全部账户（V1 不支持 ALT，全部内联）。
-/// - V0：静态账户 + 逐个 ALT 查链解析出的 writable/readonly。
-///   ALT 有缓存，重复调用不会放大 RPC 压力。
-async fn static_and_cached_keys(tx: &VersionedTransaction) -> Vec<solana_sdk::pubkey::Pubkey> {
-    use solana_sdk::message::VersionedMessage;
-    use solana_sdk::pubkey::Pubkey;
-
-    match &tx.message {
-        VersionedMessage::Legacy(m) => m.account_keys.clone(),
-        VersionedMessage::V1(m) => m.account_keys.clone(),
-        VersionedMessage::V0(m) => {
-            let mut keys = m.account_keys.clone();
-            let (mut writable, mut readonly) = (Vec::new(), Vec::new());
-            for lookup in &m.address_table_lookups {
-                let Ok(onchain) = crate::get_or_fetch_alt(lookup.account_key).await else {
-                    writable.extend(lookup.writable_indexes.iter().map(|_| Pubkey::default()));
-                    readonly.extend(lookup.readonly_indexes.iter().map(|_| Pubkey::default()));
-                    continue;
-                };
-                for i in &lookup.writable_indexes {
-                    writable.push(*onchain.get(*i as usize).unwrap_or(&Pubkey::default()));
-                }
-                for i in &lookup.readonly_indexes {
-                    readonly.push(*onchain.get(*i as usize).unwrap_or(&Pubkey::default()));
-                }
-            }
-            keys.extend(writable);
-            keys.extend(readonly);
-            keys
-        }
-    }
-}

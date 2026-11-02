@@ -14,15 +14,14 @@
 use bs58;
 use log::warn;
 use solana_client::rpc_response::OptionSerializer;
-use solana_sdk::message::compiled_instruction::CompiledInstruction;
 use solana_sdk::pubkey::Pubkey;
 use solana_transaction_status_client_types::{
-    EncodedConfirmedTransactionWithStatusMeta, EncodedTransaction, EncodedTransactionWithStatusMeta, UiCompiledInstruction,
-    UiInstruction, UiMessage, UiRawMessage, UiTransaction,
+    EncodedConfirmedTransactionWithStatusMeta, EncodedTransaction, EncodedTransactionWithStatusMeta, UiInstruction,
+    UiMessage, UiRawMessage, UiTransaction,
 };
 use std::str::FromStr;
 
-use super::common::{ParseError, ParsedTx, TxConfig, scan_compute_budget};
+use super::common::{ParseError, ParseOptions, ParsedTx, TxConfig};
 use crate::{IndexedInstruction, ParsedInstruction, get_or_fetch_alt};
 
 /// RPC 消息里 ALT 的解析结果：`(writable, readonly)`。
@@ -52,10 +51,18 @@ async fn resolve_alts(message: &UiRawMessage) -> (Vec<Pubkey>, Vec<Pubkey>) {
     (writable_out, readonly_out)
 }
 
-/// 从 RPC 交易解析出统一结果。
+/// 从 RPC 交易解析出统一结果（全量：含余额变化）。
 ///
 /// 需要访问链上 ALT，所以是 `async`。
 pub async fn parse_rpc_tx(tx: impl Into<EncodedConfirmedTransactionWithStatusMeta>) -> Result<ParsedTx, ParseError> {
+    parse_rpc_tx_with(tx, ParseOptions::default()).await
+}
+
+/// 同 [`parse_rpc_tx`]，但可以关掉可选产物。
+pub async fn parse_rpc_tx_with(
+    tx: impl Into<EncodedConfirmedTransactionWithStatusMeta>,
+    opts: ParseOptions,
+) -> Result<ParsedTx, ParseError> {
     let EncodedConfirmedTransactionWithStatusMeta { slot, transaction, .. } = tx.into();
     let EncodedTransactionWithStatusMeta { transaction, meta, .. } = transaction;
 
@@ -77,27 +84,16 @@ pub async fn parse_rpc_tx(tx: impl Into<EncodedConfirmedTransactionWithStatusMet
     account_keys.extend(alt_writable);
     account_keys.extend(alt_readonly);
 
-    // 内部指令按父下标分组。
-    let inner_map: std::collections::HashMap<u8, Vec<UiCompiledInstruction>> = match meta.as_ref().map(|m| &m.inner_instructions) {
-        Some(OptionSerializer::Some(inner)) => inner
-            .iter()
-            .map(|item| {
-                let ixs = item
-                    .instructions
-                    .iter()
-                    .filter_map(|i| match i {
-                        UiInstruction::Compiled(c) => Some(c.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                (item.index, ixs)
-            })
-            .collect(),
-        _ => Default::default(),
+    // 内部指令：直接借 meta 里那份，别先 clone 成一个 HashMap 再解析
+    // （旧实现把每条内部指令的 accounts/data 各复制一遍）。
+    let inner_groups = match meta.as_ref().map(|m| &m.inner_instructions) {
+        Some(OptionSerializer::Some(inner)) => inner.as_slice(),
+        _ => &[][..],
     };
 
-    let log_msgs: Option<Vec<String>> = meta.as_ref().and_then(|m| match &m.log_messages {
-        OptionSerializer::Some(v) => Some(v.clone()),
+    // 日志同理：后面只读不写，别 clone 整个 `Vec<String>`。
+    let log_msgs: Option<&[String]> = meta.as_ref().and_then(|m| match &m.log_messages {
+        OptionSerializer::Some(v) => Some(v.as_slice()),
         _ => None,
     });
 
@@ -121,10 +117,13 @@ pub async fn parse_rpc_tx(tx: impl Into<EncodedConfirmedTransactionWithStatusMet
             slot,
         });
 
-        if let Some(inner) = inner_map.get(&(index as u8)) {
-            for (inner_index, ix) in inner.iter().enumerate() {
+        if let Some(group) = inner_groups.iter().find(|g| g.index as usize == index) {
+            let mut inner_index = 0usize;
+            for inner_ix in group.instructions.iter() {
+                let UiInstruction::Compiled(ix) = inner_ix else { continue };
+                inner_index += 1;
                 instructions.push(IndexedInstruction {
-                    index: format!("{}.{}", index + 1, inner_index + 1),
+                    index: format!("{}.{}", index + 1, inner_index),
                     instruction: ParsedInstruction {
                         program: account_keys
                             .get(ix.program_id_index as usize)
@@ -160,31 +159,33 @@ pub async fn parse_rpc_tx(tx: impl Into<EncodedConfirmedTransactionWithStatusMet
     // config：RPC JSON 没有 V1 config 字段（V1 交易经 RPC 取回时
     // 会走 UiTransaction 的其他分支），这里按 V0/Legacy 处理——
     // 扫主指令里的 ComputeBudgetProgram。
-    let compiled_main: Vec<CompiledInstruction> = message
-        .instructions
-        .iter()
-        .map(|ix| CompiledInstruction {
-            program_id_index: ix.program_id_index,
-            accounts: ix.accounts.clone(),
-            data: bs58::decode(&ix.data).into_vec().unwrap_or_default(),
-        })
-        .collect();
+    //
+    // 直接扫**已经解好的** instructions（`absolute_index` 只认真实顶层指令），
+    // 不再为了扫描把消息里的每条指令重新 bs58 解码、复制一份。
     let config = TxConfig {
         v1: None,
-        compute_budget: scan_compute_budget(&compiled_main, &account_keys, &const_accounts::COMPUTE_BUDGET_PROGRAM),
+        compute_budget: super::common::scan_compute_budget_in_indexed(
+            &instructions,
+            &const_accounts::COMPUTE_BUDGET_PROGRAM,
+        ),
     };
 
     // 余额变化：RPC 的 meta 是 UI 版，先还原成官方类型，
     // 再复用与 gRPC 路径同一套计算逻辑（见 ui_meta 模块的说明）。
-    let balance_changes = match meta.as_ref() {
-        Some(ui_meta) => match super::ui_meta::ui_meta_to_official(ui_meta) {
-            Ok((official, _notes)) => Some(super::common::balance_changes_of(&official, &account_keys)),
-            Err(e) => {
-                warn!("ui_meta 转换失败，余额变化不可用: {e}");
-                None
-            }
-        },
-        None => None,
+    // 热路径（`ParseOptions::instructions_only`）跳过：本仓库没人读这个字段。
+    let balance_changes = if opts.balance_changes {
+        match meta.as_ref() {
+            Some(ui_meta) => match super::ui_meta::ui_meta_to_official(ui_meta) {
+                Ok((official, _notes)) => Some(super::common::balance_changes_of(&official, &account_keys)),
+                Err(e) => {
+                    warn!("ui_meta 转换失败，余额变化不可用: {e}");
+                    None
+                }
+            },
+            None => None,
+        }
+    } else {
+        None
     };
 
     // V1 的 config 不在指令里，伪装成指令塞回去，让基于指令匹配的下游零改动。

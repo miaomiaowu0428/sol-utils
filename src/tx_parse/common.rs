@@ -167,30 +167,65 @@ pub fn scan_compute_budget(
         let Some((&tag, rest)) = ix.data.split_first() else {
             continue;
         };
-        match tag {
-            compute_budget_tag::SET_COMPUTE_UNIT_LIMIT => {
-                if let Ok(bytes) = <[u8; 4]>::try_from(rest) {
-                    out.compute_unit_limit = Some(u32::from_le_bytes(bytes));
-                    found = true;
-                }
-            }
-            compute_budget_tag::SET_COMPUTE_UNIT_PRICE => {
-                if let Ok(bytes) = <[u8; 8]>::try_from(rest) {
-                    out.compute_unit_price = Some(u64::from_le_bytes(bytes));
-                    found = true;
-                }
-            }
-            compute_budget_tag::SET_LOADED_ACCOUNTS_DATA_SIZE_LIMIT => {
-                if let Ok(bytes) = <[u8; 4]>::try_from(rest) {
-                    out.loaded_accounts_data_size_limit = Some(u32::from_le_bytes(bytes));
-                    found = true;
-                }
-            }
-            _ => {}
-        }
+        found |= apply_compute_budget_tag(tag, rest, &mut out);
     }
 
     found.then_some(out)
+}
+
+/// 与 [`scan_compute_budget`] 同口径，输入换成**已展平的指令**。
+///
+/// RPC 路径用它避免为了扫 compute budget 再把消息里的指令重新解码/复制一份
+/// （旧实现建了一整个 `Vec<CompiledInstruction>`，等于把所有指令的 data 又拷一遍）。
+///
+/// 只看**真实顶层指令**（`absolute_index().is_some()`）：CPI 里的 ComputeBudget
+/// 不算数，与链上规则一致。
+pub fn scan_compute_budget_in_indexed(
+    instructions: &[IndexedInstruction],
+    program_id: &Pubkey,
+) -> Option<ComputeBudgetValues> {
+    let mut out = ComputeBudgetValues::default();
+    let mut found = false;
+
+    for ix in instructions {
+        if ix.absolute_index().is_none() || &ix.instruction.program != program_id {
+            continue;
+        }
+        let Some((&tag, rest)) = ix.instruction.data.split_first() else {
+            continue;
+        };
+        found |= apply_compute_budget_tag(tag, rest, &mut out);
+    }
+
+    found.then_some(out)
+}
+
+/// 解析一条 ComputeBudget 指令的 tag + 载荷，命中就写进 `out` 并返回 `true`。
+fn apply_compute_budget_tag(tag: u8, rest: &[u8], out: &mut ComputeBudgetValues) -> bool {
+    match tag {
+        compute_budget_tag::SET_COMPUTE_UNIT_LIMIT => match <[u8; 4]>::try_from(rest) {
+            Ok(bytes) => {
+                out.compute_unit_limit = Some(u32::from_le_bytes(bytes));
+                true
+            }
+            Err(_) => false,
+        },
+        compute_budget_tag::SET_COMPUTE_UNIT_PRICE => match <[u8; 8]>::try_from(rest) {
+            Ok(bytes) => {
+                out.compute_unit_price = Some(u64::from_le_bytes(bytes));
+                true
+            }
+            Err(_) => false,
+        },
+        compute_budget_tag::SET_LOADED_ACCOUNTS_DATA_SIZE_LIMIT => match <[u8; 4]>::try_from(rest) {
+            Ok(bytes) => {
+                out.loaded_accounts_data_size_limit = Some(u32::from_le_bytes(bytes));
+                true
+            }
+            Err(_) => false,
+        },
+        _ => false,
+    }
 }
 
 /// 从消息里提炼 [`TxConfig`]。
@@ -239,9 +274,46 @@ pub struct ParsedTx {
     pub config: TxConfig,
     /// 余额变化（SOL + SPL token）。
     ///
-    /// **`None` 表示来源拿不到执行结果**（如 shred 流），不等于"没有变化"。
+    /// **`None` 有两种含义**：
+    /// - 来源拿不到执行结果（如 shred 流）；
+    /// - 本次解析按 [`ParseOptions`] 跳过了计算（热路径只展平指令时不白算这一项）。
+    ///
     /// `Some(vec![])` 才是"执行了但余额没变"。
+    ///
+    /// ⚠️ 本仓库内**没有任何代码读这个字段**（读者都直接调
+    /// [`crate::balance_change::balance_changes_of_grpc`]）。所以 gRPC / RPC 的
+    /// 热路径默认走 [`ParseOptions::instructions_only`]，需要时再显式打开。
     pub balance_changes: Option<Vec<BalanceChange>>,
+}
+
+/// 解析开关：控制"顺手算"的可选产物。
+///
+/// 三个来源的 `parse_*_tx` 默认全算（与历史行为一致，调用方零改动）；
+/// 只要指令的热路径（[crate::flatten_instructions]）用
+/// [`ParseOptions::instructions_only`] 跳过余额计算。
+#[derive(Debug, Clone, Copy)]
+pub struct ParseOptions {
+    /// 是否计算 [`ParsedTx::balance_changes`]。
+    ///
+    /// 关掉只是**不算**，字段为 `None`；需要时用
+    /// [`crate::balance_change::balance_changes_of_grpc`] 单独取。
+    pub balance_changes: bool,
+}
+
+impl Default for ParseOptions {
+    fn default() -> Self {
+        Self { balance_changes: true }
+    }
+}
+
+impl ParseOptions {
+    /// 只展平指令：跳过余额变化计算。
+    ///
+    /// 省掉的是对每笔交易的一整套 SOL 遍历 + token pre/post 归并
+    /// （后者要建 4 个 HashMap）。
+    pub const fn instructions_only() -> Self {
+        Self { balance_changes: false }
+    }
 }
 
 /// 取"完整"账户列表：静态账户在前，随后是 ALT 加载的 writable、readonly。
@@ -280,15 +352,82 @@ pub fn flatten_instructions_with_keys(
     keys: &[Pubkey],
     slot: u64,
 ) -> Vec<IndexedInstruction> {
+    flatten_with_inner(
+        instructions,
+        |parent| {
+            inner_instructions
+                .iter()
+                .find(|(idx, _)| *idx == parent)
+                .map(|(_, inner)| inner.as_slice())
+        },
+        log_messages,
+        keys,
+        slot,
+    )
+}
+
+/// 指令的只读视图。
+///
+/// gRPC 的内部指令是 [`solana_transaction_status::InnerInstruction`]（里面包着一份
+/// `CompiledInstruction`），和主指令不是同一个类型。旧实现为了共用一套展平代码，
+/// 先把内部指令**深拷贝**成 `Vec<CompiledInstruction>`——一笔交易因此白白多复制
+/// 一遍每个内部指令的 `accounts` / `data`。这个 trait 让两种类型直接共用展平逻辑，
+/// 拷贝只发生在最终产出 `ParsedInstruction` 的那一刻。
+pub trait CompiledIxView {
+    fn program_id_index(&self) -> u8;
+    fn accounts(&self) -> &[u8];
+    fn data(&self) -> &[u8];
+}
+
+impl CompiledIxView for CompiledInstruction {
+    fn program_id_index(&self) -> u8 {
+        self.program_id_index
+    }
+    fn accounts(&self) -> &[u8] {
+        &self.accounts
+    }
+    fn data(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+impl CompiledIxView for solana_transaction_status::InnerInstruction {
+    fn program_id_index(&self) -> u8 {
+        self.instruction.program_id_index
+    }
+    fn accounts(&self) -> &[u8] {
+        &self.instruction.accounts
+    }
+    fn data(&self) -> &[u8] {
+        &self.instruction.data
+    }
+}
+
+/// 展平主指令 + 内部指令，**不要求内部指令先被复制成主指令类型**。
+///
+/// `inner_at` 按父指令下标（0-based 的顶层位置）返回该指令的内部指令切片。
+/// gRPC 路径直接把 `meta.inner_instructions` 的引用传进来即可。
+pub fn flatten_with_inner<'a, M, I, F>(
+    instructions: &[M],
+    inner_at: F,
+    log_messages: Option<&[String]>,
+    keys: &[Pubkey],
+    slot: u64,
+) -> Vec<IndexedInstruction>
+where
+    M: CompiledIxView,
+    I: CompiledIxView + 'a,
+    F: Fn(usize) -> Option<&'a [I]>,
+{
     let mut out = Vec::new();
 
-    let parse_ix = |ix: &CompiledInstruction| -> ParsedInstruction {
-        let program = keys.get(ix.program_id_index as usize).cloned().unwrap_or_default();
-        let accounts = ix.accounts.iter().filter_map(|&i| keys.get(i as usize).cloned()).collect();
+    let parse_ix = |ix: &dyn CompiledIxView| -> ParsedInstruction {
+        let program = keys.get(ix.program_id_index() as usize).cloned().unwrap_or_default();
+        let accounts = ix.accounts().iter().filter_map(|&i| keys.get(i as usize).cloned()).collect();
         ParsedInstruction {
             program,
             accounts,
-            data: ix.data.clone(),
+            data: ix.data().to_vec(),
             slot,
         }
     };
@@ -300,7 +439,7 @@ pub fn flatten_instructions_with_keys(
             slot,
         });
 
-        if let Some((_, inner)) = inner_instructions.iter().find(|(idx, _)| *idx == i) {
+        if let Some(inner) = inner_at(i) {
             for (j, inner_ix) in inner.iter().enumerate() {
                 out.push(IndexedInstruction {
                     index: format!("{}.{}", i + 1, j + 1),
@@ -500,6 +639,9 @@ pub fn inject_v1_config_as_instructions(parsed: &mut ParsedTx) {
 
     // 插到最前面，模拟"ComputeBudget 指令必须最先出现"的链上约束。
     let synthetic = v1_config_as_instructions(&v1cfg, parsed.slot);
+    if synthetic.is_empty() {
+        return; // V1 没写任何一项：没有伪装指令要插，别白搬一遍 Vec
+    }
     parsed.instructions.splice(0..0, synthetic);
 }
 
@@ -701,5 +843,57 @@ mod tests {
         inject_v1_config_as_instructions(&mut parsed);
 
         assert!(parsed.instructions.is_empty(), "非 V1 不应注入任何指令");
+    }
+
+    /// RPC 路径改成扫已展平的指令后，结果必须和扫原始 `CompiledInstruction` 完全一致；
+    /// 同时 CPI 与日志伪指令**不能**参与（链上只认顶层）。
+    #[test]
+    fn indexed_scan_matches_compiled_scan_and_ignores_non_top_level() {
+        let pid = const_accounts::COMPUTE_BUDGET_PROGRAM;
+
+        let mut limit_data = vec![compute_budget_tag::SET_COMPUTE_UNIT_LIMIT];
+        limit_data.extend_from_slice(&400_000u32.to_le_bytes());
+        let mut price_data = vec![compute_budget_tag::SET_COMPUTE_UNIT_PRICE];
+        price_data.extend_from_slice(&12_345u64.to_le_bytes());
+
+        let compiled = vec![
+            CompiledInstruction {
+                program_id_index: 0,
+                accounts: vec![],
+                data: limit_data.clone(),
+            },
+            CompiledInstruction {
+                program_id_index: 0,
+                accounts: vec![],
+                data: price_data.clone(),
+            },
+        ];
+        let keys = vec![pid];
+        let from_compiled = scan_compute_budget(&compiled, &keys, &pid).expect("应当扫到两条");
+
+        let mk = |index: &str, data: Vec<u8>| IndexedInstruction {
+            index: index.to_string(),
+            instruction: ParsedInstruction {
+                program: pid,
+                accounts: vec![],
+                data,
+                slot: 0,
+            },
+            slot: 0,
+        };
+        let mut trap_price = vec![compute_budget_tag::SET_COMPUTE_UNIT_PRICE];
+        trap_price.extend_from_slice(&9u64.to_le_bytes());
+        let indexed = vec![
+            mk("1", limit_data),
+            mk("1.1", trap_price.clone()), // CPI：不算
+            mk("2", price_data),
+            mk("logevent.1", trap_price), // 日志重建的假 CPI：不算
+        ];
+        let from_indexed = scan_compute_budget_in_indexed(&indexed, &pid).expect("应当扫到两条");
+
+        assert_eq!(from_indexed.compute_unit_limit, from_compiled.compute_unit_limit);
+        assert_eq!(from_indexed.compute_unit_price, from_compiled.compute_unit_price);
+        assert_eq!(from_indexed.compute_unit_limit, Some(400_000));
+        assert_eq!(from_indexed.compute_unit_price, Some(12_345), "CPI 里的价格不能覆盖顶层指令");
     }
 }

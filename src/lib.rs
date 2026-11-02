@@ -719,7 +719,9 @@ impl IndexedInstruction {
 }
 
 pub fn flatten_instructions(tx: &TransactionFormat) -> Vec<IndexedInstruction> {
-    match crate::tx_parse::parse_grpc_tx(tx) {
+    // 只展平指令：余额变化（SOL 遍历 + token 前后余额归并）在本仓库没有任何读者，
+    // 没必要在每笔交易上白算一遍。
+    match crate::tx_parse::parse_grpc_tx_with(tx, crate::tx_parse::ParseOptions::instructions_only()) {
         Ok(parsed) => parsed.instructions,
         Err(e) => {
             warn!("flatten_instructions: parse failed: {e}");
@@ -1031,12 +1033,24 @@ async fn get_or_fetch_alt(alt_address: Pubkey) -> Result<Vec<Pubkey>, ()> {
 }
 
 pub async fn flatten_main_instructions(tx: &VersionedTransaction, slot: u64) -> Result<Vec<IndexedInstruction>, ()> {
+    Ok(flatten_main_instructions_with_keys(tx, slot).await?.0)
+}
+
+/// 同 [`flatten_main_instructions`]，但把展平过程中**已经算好的账户列表**一并返回。
+///
+/// shred 路径既需要指令、又需要 `account_keys` 填 `ParsedTx`。旧实现两边各算一遍：
+/// 展平时解析一遍 ALT，外面 `static_and_cached_keys` 再克隆 + 查一遍缓存。
+/// 这里复用同一份结果，省掉一整份 `Vec<Pubkey>` 拷贝和一次 ALT 遍历。
+pub async fn flatten_main_instructions_with_keys(
+    tx: &VersionedTransaction,
+    slot: u64,
+) -> Result<(Vec<IndexedInstruction>, Vec<Pubkey>), ()> {
     match &tx.message {
-        solana_sdk::message::VersionedMessage::Legacy(message) => Ok(flatten_main_ix_from_legasy_msg(message, slot)),
-        solana_sdk::message::VersionedMessage::V0(message) => Ok(flatten_main_ix_from_v0_msg(message, slot).await),
+        solana_sdk::message::VersionedMessage::Legacy(message) => Ok(flatten_main_ix_from_legasy_msg_with_keys(message, slot)),
+        solana_sdk::message::VersionedMessage::V0(message) => Ok(flatten_main_ix_from_v0_msg_with_keys(message, slot).await),
         // V1（SIMD-0385）：不支持 ALT，账户全部内联在消息里，无需查链。
         // 字段名与 V0 一致（account_keys / instructions），只是没有 address_table_lookups。
-        solana_sdk::message::VersionedMessage::V1(message) => Ok(flatten_main_ix_from_v1_msg(message, slot)),
+        solana_sdk::message::VersionedMessage::V1(message) => Ok(flatten_main_ix_from_v1_msg_with_keys(message, slot)),
     }
 }
 
@@ -1061,7 +1075,12 @@ pub async fn flatten_main_instructions(tx: &VersionedTransaction, slot: u64) -> 
 /// 注意 `priority_fee` 会被**反解成等效单价**（`ceil(fee × 1e6 / limit)`），
 /// 不是把 lamports 总额直接填进 `micro_lamports` —— 详见
 /// [`tx_parse::v1_equivalent_cu_price`]。
-pub fn flatten_main_ix_from_v1_msg(
+pub fn flatten_main_ix_from_v1_msg(msg: &solana_sdk::message::v1::Message, slot: u64) -> Vec<IndexedInstruction> {
+    flatten_main_ix_from_v1_msg_with_keys(msg, slot).0
+}
+
+/// 同 [`flatten_main_ix_from_v1_msg`]，额外返回完整账户列表（V1 全部内联）。
+pub fn flatten_main_ix_from_v1_msg_with_keys(
     solana_sdk::message::v1::Message {
         account_keys: accounts,
         instructions: ixs,
@@ -1069,7 +1088,7 @@ pub fn flatten_main_ix_from_v1_msg(
         ..
     }: &solana_sdk::message::v1::Message,
     slot: u64,
-) -> Vec<IndexedInstruction> {
+) -> (Vec<IndexedInstruction>, Vec<Pubkey>) {
     // ① V1 config → 伪装指令（插在最前面，与链上"ComputeBudget 必须最先"一致）
     let mut out = crate::tx_parse::v1_config_as_instructions(&crate::tx_parse::v1_config_of(config), slot);
 
@@ -1092,10 +1111,15 @@ pub fn flatten_main_ix_from_v1_msg(
         }
     }));
 
-    out
+    (out, accounts.clone())
 }
 
-pub async fn flatten_main_ix_from_v0_msg(
+pub async fn flatten_main_ix_from_v0_msg(msg: &solana_sdk::message::v0::Message, slot: u64) -> Vec<IndexedInstruction> {
+    flatten_main_ix_from_v0_msg_with_keys(msg, slot).await.0
+}
+
+/// 同 [`flatten_main_ix_from_v0_msg`]，额外返回完整账户列表（静态 + ALT writable + readonly）。
+pub async fn flatten_main_ix_from_v0_msg_with_keys(
     solana_sdk::message::v0::Message {
         account_keys: accounts,
         instructions: ixs,
@@ -1103,7 +1127,7 @@ pub async fn flatten_main_ix_from_v0_msg(
         ..
     }: &solana_sdk::message::v0::Message,
     slot: u64,
-) -> Vec<IndexedInstruction> {
+) -> (Vec<IndexedInstruction>, Vec<Pubkey>) {
     let mut alt_realonly: Vec<Pubkey> = vec![];
     let mut alt_writable: Vec<Pubkey> = vec![];
     for MessageAddressTableLookup {
@@ -1131,7 +1155,8 @@ pub async fn flatten_main_ix_from_v0_msg(
     let mut accounts = accounts.clone();
     accounts.extend(alt_writable);
     accounts.extend(alt_realonly);
-    ixs.iter() // 遍历指令引用，不消耗原 ixs
+    let out: Vec<IndexedInstruction> = ixs
+        .iter() // 遍历指令引用，不消耗原 ixs
         .enumerate()
         .map(|(index, ix)| {
             // ix 是 &Instruction（共享引用）
@@ -1157,18 +1182,25 @@ pub async fn flatten_main_ix_from_v0_msg(
                 slot,
             }
         })
-        .collect()
+        .collect();
+
+    (out, accounts)
 }
 
-pub fn flatten_main_ix_from_legasy_msg(
+pub fn flatten_main_ix_from_legasy_msg(msg: &solana_sdk::message::Message, slot: u64) -> Vec<IndexedInstruction> {
+    flatten_main_ix_from_legasy_msg_with_keys(msg, slot).0
+}
+
+/// 同 [`flatten_main_ix_from_legasy_msg`]，额外返回账户列表（Legacy 全部内联）。
+pub fn flatten_main_ix_from_legasy_msg_with_keys(
     solana_sdk::message::Message {
         account_keys: accounts,
         instructions: ixs,
         ..
     }: &solana_sdk::message::Message,
     slot: u64,
-) -> Vec<IndexedInstruction> {
-    ixs.iter()
+) -> (Vec<IndexedInstruction>, Vec<Pubkey>) {
+    let out: Vec<IndexedInstruction> = ixs.iter()
         .enumerate()
         .map(|(index, ix)| {
             let ix_accounts = ix.accounts.iter().map(|index| accounts[*index as usize]).collect();
@@ -1183,7 +1215,9 @@ pub fn flatten_main_ix_from_legasy_msg(
                 slot,
             }
         })
-        .collect()
+        .collect();
+
+    (out, accounts.clone())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1234,8 +1268,12 @@ impl TokenBalanceChange {
         use std::collections::HashMap;
 
         // 完整账户列表：静态账户 + ALT 加载的地址。
-        // 新版 TransactionFormat 不再直接暴露 account_keys，需从消息 + meta 现算。
-        let keys = crate::tx_parse::parse_grpc_tx(tx).map(|p| p.account_keys).unwrap_or_default();
+        // 不要为了拿账户列表跑一遍完整解析——那会把整笔交易的指令都展平一遍。
+        let keys = crate::tx_parse::account_keys_of(
+            &tx.transaction.message,
+            &meta.loaded_addresses.writable,
+            &meta.loaded_addresses.readonly,
+        );
 
         let mut pre_map: HashMap<Pubkey, (Pubkey, Pubkey, u8, u64)> = HashMap::new();
         for tb in pre_token_balances {

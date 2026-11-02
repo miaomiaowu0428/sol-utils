@@ -40,12 +40,13 @@ pub mod from_shred;
 pub mod ui_meta;
 
 pub use common::{
-    account_keys_of, flatten_instructions_with_keys, inject_v1_config_as_instructions, synthetic_index, tx_config_of,
-    v1_config_as_instructions, v1_config_of, v1_equivalent_cu_price, ComputeBudgetValues, ParseError, ParsedTx,
-    TxConfig, V1Config, LOG_EVENT_INDEX_PREFIX,
+    account_keys_of, flatten_instructions_with_keys, flatten_with_inner, inject_v1_config_as_instructions,
+    scan_compute_budget_in_indexed, synthetic_index, tx_config_of, v1_config_as_instructions, v1_config_of,
+    v1_equivalent_cu_price, ComputeBudgetValues, CompiledIxView, ParseError, ParseOptions, ParsedTx, TxConfig, V1Config,
+    LOG_EVENT_INDEX_PREFIX,
 };
 
 // 三个来源的入口，统一命名便于下游按需引入。
-pub use from_grpc::{loaded_addresses_of, parse_grpc_tx};
-pub use from_rpc::parse_rpc_tx;
+pub use from_grpc::{loaded_addresses_of, parse_grpc_tx, parse_grpc_tx_with};
+pub use from_rpc::{parse_rpc_tx, parse_rpc_tx_with};
 pub use from_shred::parse_shred_tx;

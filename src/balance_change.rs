@@ -14,10 +14,15 @@ pub fn balance_changes_of_grpc(tx: &grpc_client::TransactionFormat) -> Result<Ve
     };
 
     // 完整账户列表：静态账户 + ALT 加载的地址。
-    // 新版 TransactionFormat 不再直接暴露 account_keys，需从消息 + meta 现算。
-    let account_keys = crate::tx_parse::parse_grpc_tx(tx)
-        .map_err(|e| anyhow::anyhow!("parse tx failed: {e}"))?
-        .account_keys;
+    //
+    // ⚠️ 这里**不要**为了拿账户列表去调 `parse_grpc_tx`：那会把整笔交易的
+    // 指令都展平一遍（还顺带算一遍余额变化），而这个函数只想要 key 列表。
+    // 直接拼静态账户 + ALT 加载地址即可，零展平。
+    let account_keys = crate::tx_parse::account_keys_of(
+        &tx.transaction.message,
+        &meta.loaded_addresses.writable,
+        &meta.loaded_addresses.readonly,
+    );
     let account_keys = &account_keys;
 
     // ===============================
