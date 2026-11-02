@@ -44,6 +44,7 @@ use whirlwind::ShardMap;
 
 pub mod async_utils;
 pub mod balance_change;
+pub mod tx_ctx;
 pub mod log_events;
 pub mod macros;
 pub mod parse_rpc_fetched_json;
@@ -718,6 +719,15 @@ impl IndexedInstruction {
     }
 }
 
+/// 展平一笔 gRPC 交易，得到 `IndexedInstruction` 序列。
+///
+/// ⚠️ **subscriber 里不要直接调它**：`TxSubscriber::on_tx` 拿到的是
+/// [`tx_ctx::TxCtx`]，请用 [`tx_ctx::TxCtx::instructions`]。后者对同一笔交易
+/// 只展平一次并共享给所有 subscriber；直接调本函数等于每个订阅者各算一遍
+/// （`TxCtx` 有 `Deref<Target = TransactionFormat>`，所以这么写**能编过**，
+/// 只是悄悄退化成重复劳动）。
+///
+/// 需要一次性展平（脚本、测试、非广播路径）时用本函数即可。
 pub fn flatten_instructions(tx: &TransactionFormat) -> Vec<IndexedInstruction> {
     // 只展平指令：余额变化（SOL 遍历 + token 前后余额归并）在本仓库没有任何读者，
     // 没必要在每笔交易上白算一遍。
